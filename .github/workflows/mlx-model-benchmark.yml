@@ -1,0 +1,127 @@
+name: MLX model benchmark
+
+on:
+  push:
+    paths-ignore:
+      - "logs/mlx-model-benchmark/**"
+      - "logs/mlx-cuda-smoke/**"
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Comma-separated model ids to benchmark"
+        required: false
+        default: "Qwen/Qwen3-0.6B,Qwen/Qwen3-1.7B,Qwen/Qwen2.5-3B-Instruct,Qwen/Qwen3-4B,Qwen/Qwen3-8B"
+      max_tokens:
+        description: "Generated tokens per model"
+        required: false
+        default: "64"
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    name: Benchmark small Qwen models on MLX CUDA
+    runs-on: self-hosted
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run benchmark, save logs, and push them
+        shell: bash
+        env:
+          BENCH_MODELS: ${{ github.event.inputs.models || 'Qwen/Qwen3-0.6B,Qwen/Qwen3-1.7B,Qwen/Qwen2.5-3B-Instruct,Qwen/Qwen3-4B,Qwen/Qwen3-8B' }}
+          BENCH_MAX_TOKENS: ${{ github.event.inputs.max_tokens || '64' }}
+          BENCH_WARMUP: "1"
+        run: |
+          set -uo pipefail
+
+          LOG_DIR="logs/mlx-model-benchmark"
+          RUN_LOG="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          RUN_JSONL="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
+          LATEST_LOG="${LOG_DIR}/latest.log"
+          LATEST_JSONL="${LOG_DIR}/latest.jsonl"
+          mkdir -p "${LOG_DIR}"
+
+          export BENCH_OUTPUT="${RUN_JSONL}"
+
+          {
+            echo "MLX model benchmark"
+            echo "==================="
+            echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "SHA: ${GITHUB_SHA}"
+            echo "Run ID: ${GITHUB_RUN_ID}"
+            echo "Run attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "Runner name: ${RUNNER_NAME:-unknown}"
+            echo "Runner OS: ${RUNNER_OS:-unknown}"
+            echo "Runner arch: ${RUNNER_ARCH:-unknown}"
+            echo "Models: ${BENCH_MODELS}"
+            echo "Max tokens: ${BENCH_MAX_TOKENS}"
+            echo
+
+            echo "--- System ---"
+            uname -a
+            echo
+
+            echo "--- NVIDIA ---"
+            command -v nvidia-smi
+            nvidia-smi
+            echo
+
+            echo "--- Install dependencies ---"
+            python --version
+            python -m pip install --upgrade pip
+            python -m pip install "mlx[cuda12]" mlx-lm pytest numpy huggingface_hub
+            echo
+
+            echo "--- Benchmark ---"
+            python scripts/benchmark_mlx_models.py
+          } 2>&1 | tee "${RUN_LOG}"
+          benchmark_status=${PIPESTATUS[0]}
+
+          {
+            echo
+            echo "--- Result ---"
+            echo "Benchmark exit code: ${benchmark_status}"
+          } | tee -a "${RUN_LOG}"
+
+          cp "${RUN_LOG}" "${LATEST_LOG}"
+          cp "${RUN_JSONL}" "${LATEST_JSONL}" 2>/dev/null || true
+
+          echo "--- Commit benchmark logs ---" | tee -a "${RUN_LOG}"
+          git status --short | tee -a "${RUN_LOG}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${LOG_DIR}"
+
+          if git diff --cached --quiet; then
+            echo "No benchmark log changes to commit." | tee -a "${RUN_LOG}"
+            push_status=0
+          else
+            git commit -m "Add MLX model benchmark logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${RUN_LOG}"
+            git push 2>&1 | tee -a "${RUN_LOG}"
+            push_status=${PIPESTATUS[0]}
+          fi
+
+          echo "Run log: ${RUN_LOG}"
+          echo "Run JSONL: ${RUN_JSONL}"
+          echo "Latest log: ${LATEST_LOG}"
+          echo "Latest JSONL: ${LATEST_JSONL}"
+          echo "Git push exit code: ${push_status}"
+
+          if [ "${benchmark_status}" -ne 0 ]; then
+            exit "${benchmark_status}"
+          fi
+
+          exit "${push_status}"
