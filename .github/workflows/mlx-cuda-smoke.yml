@@ -2,8 +2,13 @@ name: MLX CUDA smoke
 
 on:
   push:
+    paths-ignore:
+      - "logs/mlx-cuda-smoke/**"
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   smoke:
@@ -14,29 +19,59 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Show CUDA environment
+      - name: Run smoke test, save logs, and push them
+        shell: bash
         run: |
-          set -euxo pipefail
-          uname -a
-          command -v nvidia-smi
-          nvidia-smi
+          set -uo pipefail
 
-      - name: Install dependencies
-        run: |
-          set -euxo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install "mlx[cuda12]" pytest numpy
+          LOG_DIR="logs/mlx-cuda-smoke"
+          LOG_FILE="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          LATEST_LOG="${LOG_DIR}/latest.log"
+          mkdir -p "${LOG_DIR}"
 
-      - name: Show MLX CUDA environment
-        run: |
-          set -euxo pipefail
-          python - <<'PY'
+          {
+            echo "MLX CUDA smoke test"
+            echo "==================="
+            echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "SHA: ${GITHUB_SHA}"
+            echo "Run ID: ${GITHUB_RUN_ID}"
+            echo "Run attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "Runner name: ${RUNNER_NAME:-unknown}"
+            echo "Runner OS: ${RUNNER_OS:-unknown}"
+            echo "Runner arch: ${RUNNER_ARCH:-unknown}"
+            echo
+
+            echo "--- System ---"
+            uname -a
+            echo
+
+            echo "--- NVIDIA ---"
+            command -v nvidia-smi
+            nvidia-smi
+            echo
+
+            echo "--- Python ---"
+            python --version
+            python -m pip --version
+            echo
+
+            echo "--- Install dependencies ---"
+            python -m pip install --upgrade pip
+            python -m pip install "mlx[cuda12]" pytest numpy
+            echo
+
+            echo "--- MLX CUDA environment ---"
+            python - <<'PY'
           import mlx.core as mx
 
           print("MLX CUDA available:", mx.cuda.is_available())
@@ -44,8 +79,42 @@ jobs:
           mx.set_default_device(mx.gpu)
           print("MLX device info:", mx.device_info())
           PY
+            echo
 
-      - name: Run smoke test
-        run: |
-          set -euxo pipefail
-          python -m pytest -q tests/test_mlx_cuda_smoke.py
+            echo "--- Pytest ---"
+            python -m pytest -q tests/test_mlx_cuda_smoke.py
+          } 2>&1 | tee "${LOG_FILE}"
+          smoke_status=${PIPESTATUS[0]}
+
+          {
+            echo
+            echo "--- Result ---"
+            echo "Smoke test exit code: ${smoke_status}"
+          } | tee -a "${LOG_FILE}"
+
+          cp "${LOG_FILE}" "${LATEST_LOG}"
+
+          echo "--- Commit logs ---" | tee -a "${LOG_FILE}"
+          git status --short | tee -a "${LOG_FILE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${LOG_DIR}"
+
+          if git diff --cached --quiet; then
+            echo "No log changes to commit." | tee -a "${LOG_FILE}"
+            push_status=0
+          else
+            git commit -m "Add MLX CUDA smoke logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+            git push 2>&1 | tee -a "${LOG_FILE}"
+            push_status=${PIPESTATUS[0]}
+          fi
+
+          echo "Log file: ${LOG_FILE}"
+          echo "Latest log: ${LATEST_LOG}"
+          echo "Git push exit code: ${push_status}"
+
+          if [ "${smoke_status}" -ne 0 ]; then
+            exit "${smoke_status}"
+          fi
+
+          exit "${push_status}"
