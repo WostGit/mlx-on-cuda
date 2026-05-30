@@ -1,0 +1,71 @@
+MLX CUDA smoke test
+===================
+UTC time: 2026-05-30T05:11:38Z
+Repository: WostGit/mlx-on-cuda
+Ref: refs/heads/main
+SHA: 748cf6ca26967f0dfc41cbb25606f9dcc4a439e4
+Run ID: 26675367507
+Run attempt: 1
+Runner name: MININT-AMVHAE1
+Runner OS: Linux
+Runner arch: X64
+
+--- System ---
+Linux MININT-AMVHAE1 6.6.114.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Mon Dec  1 20:46:23 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+
+--- NVIDIA ---
+/usr/lib/wsl/lib/nvidia-smi
+Sat May 30 07:11:38 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 590.57                 Driver Version: 591.86         CUDA Version: 13.1     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4080        On  |   00000000:01:00.0  On |                  N/A |
+|  0%   35C    P8              5W /  320W |     976MiB /  16376MiB |      1%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A              25      G   /Xwayland                             N/A      |
++-----------------------------------------------------------------------------------------+
+
+--- Python ---
+Python 3.11.15
+pip 26.1.1 from /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages/pip (python 3.11)
+
+--- Install dependencies ---
+Requirement already satisfied: pip in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (26.1.1)
+Requirement already satisfied: pytest in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (9.0.3)
+Requirement already satisfied: numpy in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (2.4.6)
+Requirement already satisfied: mlx[cuda12] in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (0.31.1)
+Requirement already satisfied: mlx-cuda-12==0.31.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from mlx[cuda12]) (0.31.1)
+Requirement already satisfied: nvidia-cublas-cu12==12.9.* in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from mlx-cuda-12==0.31.1->mlx[cuda12]) (12.9.2.10)
+Requirement already satisfied: nvidia-cuda-nvrtc-cu12==12.9.* in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from mlx-cuda-12==0.31.1->mlx[cuda12]) (12.9.86)
+Requirement already satisfied: nvidia-cudnn-cu12==9.* in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from mlx-cuda-12==0.31.1->mlx[cuda12]) (9.23.0.39)
+Requirement already satisfied: nvidia-nccl-cu12 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from mlx-cuda-12==0.31.1->mlx[cuda12]) (2.30.4)
+Requirement already satisfied: iniconfig>=1.0.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from pytest) (2.3.0)
+Requirement already satisfied: packaging>=22 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from pytest) (26.2)
+Requirement already satisfied: pluggy<2,>=1.5 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from pytest) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.11.15/x64/lib/python3.11/site-packages (from pytest) (2.20.0)
+
+--- MLX CUDA environment ---
+MLX CUDA available: True
+MLX GPU device count: 1
+MLX device info: {'total_memory': 17171480576, 'free_memory': 15555739648, 'compute_capability_minor': 9, 'compute_capability_major': 8, 'pci_bus_id': '0000:01:00.0', 'uuid': 'GPU-3fb41995-9b06-20f0-c456-6217f7ab969c', 'architecture': 'sm_89', 'device_name': 'NVIDIA GeForce RTX 4080'}
+
+--- Pytest ---
+....                                                                     [100%]
+4 passed in 1.17s
+
+--- Result ---
+Smoke test exit code: 0
+--- Commit logs ---
+?? logs/
+?? tests/__pycache__/
