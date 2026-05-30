@@ -1,0 +1,51 @@
+name: MLX CUDA smoke
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Run MLX CUDA smoke test
+    runs-on: self-hosted
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Show CUDA environment
+        run: |
+          set -euxo pipefail
+          uname -a
+          command -v nvidia-smi
+          nvidia-smi
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "mlx[cuda12]" pytest numpy
+
+      - name: Show MLX CUDA environment
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import mlx.core as mx
+
+          print("MLX CUDA available:", mx.cuda.is_available())
+          print("MLX GPU device count:", mx.device_count(mx.gpu))
+          mx.set_default_device(mx.gpu)
+          print("MLX device info:", mx.device_info())
+          PY
+
+      - name: Run smoke test
+        run: |
+          set -euxo pipefail
+          python -m pytest -q tests/test_mlx_cuda_smoke.py
