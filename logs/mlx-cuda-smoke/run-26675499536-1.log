@@ -66,3 +66,7 @@ MLX device info: {'total_memory': 17171480576, 'free_memory': 15555739648, 'comp
 
 --- Result ---
 Smoke test exit code: 0
+--- Commit logs ---
+ M logs/mlx-cuda-smoke/latest.log
+?? logs/mlx-cuda-smoke/run-26675499536-1.log
+?? tests/__pycache__/
