@@ -111,16 +111,27 @@ jobs:
           git status --short | tee -a "${LOG_FILE}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "logs/pacz-opt"
 
-          if git diff --cached --quiet; then
-            echo "No log changes to commit." | tee -a "${LOG_FILE}"
-            push_status=0
+          # Remove untracked experiment workspace before any git pull/rebase.
+          rm -rf "${WORK_PARENT}"
+
+          # Sync first, then add and commit only the logs.
+          git pull --rebase origin "${GITHUB_REF_NAME}" 2>&1 | tee -a "${LOG_FILE}"
+          pull_status=${PIPESTATUS[0]}
+
+          if [ "${pull_status}" -ne 0 ]; then
+            echo "Git pull --rebase exit code: ${pull_status}" | tee -a "${LOG_FILE}"
+            push_status="${pull_status}"
           else
-            git commit -m "Add PACZero OPT smoke logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
-            git pull --rebase origin "${GITHUB_REF_NAME}" 2>&1 | tee -a "${LOG_FILE}"
-            git push 2>&1 | tee -a "${LOG_FILE}"
-            push_status=${PIPESTATUS[0]}
+            git add "logs/pacz-opt"
+            if git diff --cached --quiet; then
+              echo "No log changes to commit." | tee -a "${LOG_FILE}"
+              push_status=0
+            else
+              git commit -m "Add PACZero OPT smoke logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+              git push 2>&1 | tee -a "${LOG_FILE}"
+              push_status=${PIPESTATUS[0]}
+            fi
           fi
 
           echo "Log file: logs/pacz-opt/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
