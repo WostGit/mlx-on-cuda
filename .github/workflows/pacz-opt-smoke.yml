@@ -1,23 +1,22 @@
-name: PACZero OPT I0 smoke
+name: PACZero OPT I0 smoke once
 
 on:
   push:
     branches:
       - experiment/pacz-opt-20260603
     paths:
-      - "experiments/pacz-opt-i0-trigger-*.md"
-  workflow_dispatch:
+      - "experiments/pacz-opt-i0-run-once-20260603.md"
 
 permissions:
   contents: write
 
 concurrency:
-  group: pacz-opt-i0-${{ github.ref }}
+  group: pacz-opt-i0-once-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   paczero:
-    name: Run PACZero OPT-1.3B I0 smoke experiment
+    name: Run PACZero OPT-1.3B I0 smoke experiment once
     runs-on: self-hosted
     timeout-minutes: 60
 
