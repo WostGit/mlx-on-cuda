@@ -1,0 +1,193 @@
+name: PACZero OPT-1.3B full reproduction
+
+on:
+  push:
+    branches:
+      - experiment/pacz-opt-20260603
+    paths:
+      - "experiments/pacz-1p3b-full-trigger-*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pacz-1p3b-full-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  paczero_1p3b_full:
+    name: Run PACZero OPT-1.3B paper scripts sequentially
+    runs-on: self-hosted
+    timeout-minutes: 4320
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Run OPT-1.3B PACZero reproduction, save logs, and push them
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          ROOT_DIR="${PWD}"
+          LOG_DIR="${ROOT_DIR}/logs/pacz-1p3b-full"
+          LOG_FILE="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          SUMMARY_FILE="${LOG_DIR}/summary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
+          LATEST_LOG="${LOG_DIR}/latest.log"
+          LATEST_SUMMARY="${LOG_DIR}/latest-summary.jsonl"
+          WORK_PARENT="${ROOT_DIR}/_work"
+          WORK_DIR="${WORK_PARENT}/paczero"
+          mkdir -p "${LOG_DIR}" "${WORK_PARENT}"
+
+          {
+            echo "PACZero OPT-1.3B full paper reproduction"
+            echo "========================================="
+            echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "SHA: ${GITHUB_SHA}"
+            echo "Run ID: ${GITHUB_RUN_ID}"
+            echo "Run attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "Runner name: ${RUNNER_NAME:-unknown}"
+            echo "Runner OS: ${RUNNER_OS:-unknown}"
+            echo "Runner arch: ${RUNNER_ARCH:-unknown}"
+            echo
+
+            echo "--- System ---"
+            uname -a
+            echo
+
+            echo "--- NVIDIA ---"
+            command -v nvidia-smi
+            nvidia-smi
+            echo
+
+            echo "--- Python ---"
+            python --version
+            python -m pip --version
+            echo
+
+            echo "--- Clone PACZero ---"
+            rm -rf "${WORK_DIR}"
+            git clone --depth 1 https://github.com/bilgehanertan/paczero.git "${WORK_DIR}"
+            cd "${WORK_DIR}"
+            PACZERO_SHA="$(git rev-parse HEAD)"
+            echo "PACZero SHA: ${PACZERO_SHA}"
+            echo
+
+            echo "--- Install dependencies ---"
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements.txt
+            echo
+
+            echo "--- Build OPT-1.3B paper-script manifest ---"
+            # Smaller-model reproduction: all PACZero headline/ablation scripts that target OPT-1.3B.
+            # Excludes 6.7B cells and DP baseline scripts, which have separate setup and are not PACZero-original runs.
+            find scripts/headline scripts/ablation -type f -name "*.sh" \
+              | grep "1p3b" \
+              | sort > /tmp/pacz_1p3b_manifest.txt
+            cat /tmp/pacz_1p3b_manifest.txt
+            echo "Script count: $(wc -l < /tmp/pacz_1p3b_manifest.txt)"
+            echo
+
+            echo "--- Run scripts sequentially ---"
+            : > "${SUMMARY_FILE}"
+            overall_status=0
+            while IFS= read -r script; do
+              start_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              echo
+              echo "===== START ${script} at ${start_utc} ====="
+              script_status=0
+              bash "${script}" || script_status=$?
+              end_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              echo "===== END ${script} at ${end_utc}; status=${script_status} ====="
+
+              run_id="$(basename "${script}" .sh)"
+              metrics_path="result/runs/${run_id}/metrics.json"
+              if [ -f "${metrics_path}" ]; then
+                metrics_one_line="$(python -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "${metrics_path}")"
+              else
+                metrics_one_line="null"
+              fi
+              python - <<PY
+          import json
+          row = {
+              "script": "${script}",
+              "run_id": "${run_id}",
+              "status": ${script_status},
+              "start_utc": "${start_utc}",
+              "end_utc": "${end_utc}",
+              "metrics": ${metrics_one_line},
+          }
+          with open("${SUMMARY_FILE}", "a", encoding="utf-8") as f:
+              f.write(json.dumps(row, sort_keys=True) + "\n")
+          PY
+              if [ "${script_status}" -ne 0 ]; then
+                overall_status="${script_status}"
+              fi
+            done < /tmp/pacz_1p3b_manifest.txt
+
+            echo
+            echo "--- Summary JSONL ---"
+            cat "${SUMMARY_FILE}"
+            echo
+            echo "PACZero 1.3B full reproduction exit code: ${overall_status}"
+            exit "${overall_status}"
+          } 2>&1 | tee "${LOG_FILE}"
+          run_status=${PIPESTATUS[0]}
+
+          cd "${ROOT_DIR}"
+
+          {
+            echo
+            echo "--- Final result ---"
+            echo "PACZero 1.3B full workflow exit code: ${run_status}"
+          } | tee -a "${LOG_FILE}"
+
+          cp "${LOG_FILE}" "${LATEST_LOG}"
+          cp "${SUMMARY_FILE}" "${LATEST_SUMMARY}" 2>/dev/null || true
+
+          echo "--- Commit logs ---" | tee -a "${LOG_FILE}"
+          git status --short | tee -a "${LOG_FILE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          rm -rf "${WORK_PARENT}"
+
+          git pull --rebase origin "${GITHUB_REF_NAME}" 2>&1 | tee -a "${LOG_FILE}"
+          pull_status=${PIPESTATUS[0]}
+
+          if [ "${pull_status}" -ne 0 ]; then
+            echo "Git pull --rebase exit code: ${pull_status}" | tee -a "${LOG_FILE}"
+            push_status="${pull_status}"
+          else
+            git add "logs/pacz-1p3b-full"
+            if git diff --cached --quiet; then
+              echo "No log changes to commit." | tee -a "${LOG_FILE}"
+              push_status=0
+            else
+              git commit -m "Add PACZero 1.3B full reproduction logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+              git push 2>&1 | tee -a "${LOG_FILE}"
+              push_status=${PIPESTATUS[0]}
+            fi
+          fi
+
+          echo "Log file: logs/pacz-1p3b-full/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          echo "Latest log: logs/pacz-1p3b-full/latest.log"
+          echo "Summary file: logs/pacz-1p3b-full/summary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
+          echo "Latest summary: logs/pacz-1p3b-full/latest-summary.jsonl"
+          echo "Git push exit code: ${push_status}"
+
+          if [ "${run_status}" -ne 0 ]; then
+            exit "${run_status}"
+          fi
+
+          exit "${push_status}"
