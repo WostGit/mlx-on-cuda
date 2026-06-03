@@ -1,0 +1,129 @@
+name: PACZero OPT smoke
+
+on:
+  push:
+    branches:
+      - experiment/pacz-opt-20260603
+    paths-ignore:
+      - "logs/pacz-opt/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  paczero:
+    name: Run PACZero OPT-1.3B smoke experiment
+    runs-on: self-hosted
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Run PACZero OPT smoke experiment, save logs, and push them
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          LOG_DIR="logs/pacz-opt"
+          LOG_FILE="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          LATEST_LOG="${LOG_DIR}/latest.log"
+          WORK_DIR="_work/paczero"
+          mkdir -p "${LOG_DIR}" "_work"
+
+          {
+            echo "PACZero OPT-1.3B smoke experiment"
+            echo "===================================="
+            echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "SHA: ${GITHUB_SHA}"
+            echo "Run ID: ${GITHUB_RUN_ID}"
+            echo "Run attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "Runner name: ${RUNNER_NAME:-unknown}"
+            echo "Runner OS: ${RUNNER_OS:-unknown}"
+            echo "Runner arch: ${RUNNER_ARCH:-unknown}"
+            echo
+
+            echo "--- System ---"
+            uname -a
+            echo
+
+            echo "--- NVIDIA ---"
+            command -v nvidia-smi
+            nvidia-smi
+            echo
+
+            echo "--- Python ---"
+            python --version
+            python -m pip --version
+            echo
+
+            echo "--- Clone PACZero ---"
+            rm -rf "${WORK_DIR}"
+            git clone --depth 1 https://github.com/bilgehanertan/paczero.git "${WORK_DIR}"
+            cd "${WORK_DIR}"
+            git rev-parse HEAD
+            echo
+
+            echo "--- Install dependencies ---"
+            python -m pip install --upgrade pip
+            python -m pip install -r requirements.txt
+            echo
+
+            echo "--- Run PACZero smoke script ---"
+            bash scripts/smoke.sh
+            smoke_status=$?
+            echo "PACZero smoke exit code: ${smoke_status}"
+            echo
+
+            echo "--- Result files ---"
+            find result -maxdepth 3 -type f | sort || true
+            echo
+
+            echo "--- Metrics ---"
+            find result/runs -name metrics.json -print -exec cat {} \; || true
+            exit "${smoke_status}"
+          } 2>&1 | tee "${LOG_FILE}"
+          run_status=${PIPESTATUS[0]}
+
+          {
+            echo
+            echo "--- Final result ---"
+            echo "PACZero workflow exit code: ${run_status}"
+          } | tee -a "${LOG_FILE}"
+
+          cp "${LOG_FILE}" "${LATEST_LOG}"
+
+          echo "--- Commit logs ---" | tee -a "${LOG_FILE}"
+          git status --short | tee -a "${LOG_FILE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${LOG_DIR}"
+
+          if git diff --cached --quiet; then
+            echo "No log changes to commit." | tee -a "${LOG_FILE}"
+            push_status=0
+          else
+            git commit -m "Add PACZero OPT smoke logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+            git push 2>&1 | tee -a "${LOG_FILE}"
+            push_status=${PIPESTATUS[0]}
+          fi
+
+          echo "Log file: ${LOG_FILE}"
+          echo "Latest log: ${LATEST_LOG}"
+          echo "Git push exit code: ${push_status}"
+
+          if [ "${run_status}" -ne 0 ]; then
+            exit "${run_status}"
+          fi
+
+          exit "${push_status}"
