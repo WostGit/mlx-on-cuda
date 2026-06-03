@@ -1,0 +1,511 @@
+PACZero OPT-1.3B smoke experiment
+====================================
+UTC time: 2026-06-03T07:47:25Z
+Repository: WostGit/mlx-on-cuda
+Ref: refs/heads/experiment/pacz-opt-20260603
+SHA: b435dddeda88cf1781ad1dcdbcd14a0d43534050
+Run ID: 26871050806
+Run attempt: 1
+Runner name: MININT-AMVHAE1
+Runner OS: Linux
+Runner arch: X64
+
+--- System ---
+Linux MININT-AMVHAE1 6.6.114.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Mon Dec  1 20:46:23 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+
+--- NVIDIA ---
+/usr/lib/wsl/lib/nvidia-smi
+Wed Jun  3 09:47:25 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 590.57                 Driver Version: 591.86         CUDA Version: 13.1     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4080        On  |   00000000:01:00.0  On |                  N/A |
+|  0%   33C    P8              5W /  320W |     904MiB /  16376MiB |      4%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A              25      G   /Xwayland                             N/A      |
++-----------------------------------------------------------------------------------------+
+
+--- Python ---
+Python 3.9.25
+pip 26.0.1 from /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages/pip (python 3.9)
+
+--- Clone PACZero ---
+Cloning into '/mnt/c/Users/admin/actions-runner/_work/mlx-on-cuda/mlx-on-cuda/_work/paczero'...
+b9c661b43764a499b15615f7cf4e660353874852
+
+--- Install dependencies ---
+Requirement already satisfied: pip in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (26.0.1)
+Requirement already satisfied: torch==2.4.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 9)) (2.4.0)
+Requirement already satisfied: transformers==4.28.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 10)) (4.28.1)
+Requirement already satisfied: accelerate==0.17.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 11)) (0.17.1)
+Requirement already satisfied: datasets==2.16.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 12)) (2.16.1)
+Requirement already satisfied: tokenizers==0.13.3 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 13)) (0.13.3)
+Requirement already satisfied: huggingface-hub==0.20.2 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 14)) (0.20.2)
+Requirement already satisfied: numpy==1.26.3 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 17)) (1.26.3)
+Requirement already satisfied: scipy>=1.10 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 18)) (1.13.1)
+Requirement already satisfied: packaging in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 21)) (26.2)
+Requirement already satisfied: tqdm==4.66.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 22)) (4.66.1)
+Requirement already satisfied: scikit-learn==1.3.2 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 23)) (1.3.2)
+Requirement already satisfied: setuptools<80 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 24)) (79.0.1)
+Requirement already satisfied: opacus==1.4.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 27)) (1.4.0)
+Requirement already satisfied: opt-einsum==3.3.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from -r requirements.txt (line 28)) (3.3.0)
+Requirement already satisfied: filelock in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (3.19.1)
+Requirement already satisfied: typing-extensions>=4.8.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (4.15.0)
+Requirement already satisfied: sympy in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (1.14.0)
+Requirement already satisfied: networkx in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (3.2.1)
+Requirement already satisfied: jinja2 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (3.1.6)
+Requirement already satisfied: fsspec in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (2023.10.0)
+Requirement already satisfied: nvidia-cuda-nvrtc-cu12==12.1.105 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (12.1.105)
+Requirement already satisfied: nvidia-cuda-runtime-cu12==12.1.105 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (12.1.105)
+Requirement already satisfied: nvidia-cuda-cupti-cu12==12.1.105 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (12.1.105)
+Requirement already satisfied: nvidia-cudnn-cu12==9.1.0.70 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (9.1.0.70)
+Requirement already satisfied: nvidia-cublas-cu12==12.1.3.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (12.1.3.1)
+Requirement already satisfied: nvidia-cufft-cu12==11.0.2.54 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (11.0.2.54)
+Requirement already satisfied: nvidia-curand-cu12==10.3.2.106 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (10.3.2.106)
+Requirement already satisfied: nvidia-cusolver-cu12==11.4.5.107 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (11.4.5.107)
+Requirement already satisfied: nvidia-cusparse-cu12==12.1.0.106 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (12.1.0.106)
+Requirement already satisfied: nvidia-nccl-cu12==2.20.5 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (2.20.5)
+Requirement already satisfied: nvidia-nvtx-cu12==12.1.105 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (12.1.105)
+Requirement already satisfied: triton==3.0.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from torch==2.4.0->-r requirements.txt (line 9)) (3.0.0)
+Requirement already satisfied: pyyaml>=5.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from transformers==4.28.1->-r requirements.txt (line 10)) (6.0.3)
+Requirement already satisfied: regex!=2019.12.17 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from transformers==4.28.1->-r requirements.txt (line 10)) (2026.1.15)
+Requirement already satisfied: requests in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from transformers==4.28.1->-r requirements.txt (line 10)) (2.32.5)
+Requirement already satisfied: psutil in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from accelerate==0.17.1->-r requirements.txt (line 11)) (7.2.2)
+Requirement already satisfied: pyarrow>=8.0.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from datasets==2.16.1->-r requirements.txt (line 12)) (21.0.0)
+Requirement already satisfied: pyarrow-hotfix in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from datasets==2.16.1->-r requirements.txt (line 12)) (0.7)
+Requirement already satisfied: dill<0.3.8,>=0.3.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from datasets==2.16.1->-r requirements.txt (line 12)) (0.3.7)
+Requirement already satisfied: pandas in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from datasets==2.16.1->-r requirements.txt (line 12)) (2.3.3)
+Requirement already satisfied: xxhash in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from datasets==2.16.1->-r requirements.txt (line 12)) (3.7.0)
+Requirement already satisfied: multiprocess in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from datasets==2.16.1->-r requirements.txt (line 12)) (0.70.15)
+Requirement already satisfied: aiohttp in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from datasets==2.16.1->-r requirements.txt (line 12)) (3.13.5)
+Requirement already satisfied: joblib>=1.1.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from scikit-learn==1.3.2->-r requirements.txt (line 23)) (1.5.3)
+Requirement already satisfied: threadpoolctl>=2.0.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from scikit-learn==1.3.2->-r requirements.txt (line 23)) (3.6.0)
+Requirement already satisfied: nvidia-nvjitlink-cu12 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from nvidia-cusolver-cu12==11.4.5.107->torch==2.4.0->-r requirements.txt (line 9)) (12.9.86)
+Requirement already satisfied: aiohappyeyeballs>=2.5.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (2.6.1)
+Requirement already satisfied: aiosignal>=1.4.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (1.4.0)
+Requirement already satisfied: async-timeout<6.0,>=4.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (5.0.1)
+Requirement already satisfied: attrs>=17.3.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (26.1.0)
+Requirement already satisfied: frozenlist>=1.1.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (1.8.0)
+Requirement already satisfied: multidict<7.0,>=4.5 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (6.7.1)
+Requirement already satisfied: propcache>=0.2.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (0.4.1)
+Requirement already satisfied: yarl<2.0,>=1.17.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (1.22.0)
+Requirement already satisfied: idna>=2.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from yarl<2.0,>=1.17.0->aiohttp->datasets==2.16.1->-r requirements.txt (line 12)) (3.18)
+Requirement already satisfied: charset_normalizer<4,>=2 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from requests->transformers==4.28.1->-r requirements.txt (line 10)) (3.4.7)
+Requirement already satisfied: urllib3<3,>=1.21.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from requests->transformers==4.28.1->-r requirements.txt (line 10)) (2.6.3)
+Requirement already satisfied: certifi>=2017.4.17 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from requests->transformers==4.28.1->-r requirements.txt (line 10)) (2026.5.20)
+Requirement already satisfied: MarkupSafe>=2.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from jinja2->torch==2.4.0->-r requirements.txt (line 9)) (3.0.3)
+Requirement already satisfied: python-dateutil>=2.8.2 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from pandas->datasets==2.16.1->-r requirements.txt (line 12)) (2.9.0.post0)
+Requirement already satisfied: pytz>=2020.1 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from pandas->datasets==2.16.1->-r requirements.txt (line 12)) (2026.2)
+Requirement already satisfied: tzdata>=2022.7 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from pandas->datasets==2.16.1->-r requirements.txt (line 12)) (2026.2)
+Requirement already satisfied: six>=1.5 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas->datasets==2.16.1->-r requirements.txt (line 12)) (1.17.0)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages (from sympy->torch==2.4.0->-r requirements.txt (line 9)) (1.3.0)
+
+--- Run PACZero smoke script ---
+2026-06-03 09:47:48,922 - INFO - PyTorch version 2.4.0 available.
+2026-06-03 09:48:07,893 - INFO - Sample train set 138/67349
+2026-06-03 09:48:07,893 - INFO - ... including dev set 10 samples
+2026-06-03 09:48:07,893 - INFO - Loading model with FP16...
+/mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages/transformers/modeling_utils.py:442: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  return torch.load(checkpoint_file, map_location="cpu")
+2026-06-03 09:48:12,711 - INFO - Done with 4.82s
+2026-06-03 09:48:12,929 - INFO - Inject lora to: model.decoder.layers.0.self_attn
+2026-06-03 09:48:12,988 - INFO - Inject lora to: model.decoder.layers.1.self_attn
+2026-06-03 09:48:13,028 - INFO - Inject lora to: model.decoder.layers.2.self_attn
+2026-06-03 09:48:13,069 - INFO - Inject lora to: model.decoder.layers.3.self_attn
+2026-06-03 09:48:13,109 - INFO - Inject lora to: model.decoder.layers.4.self_attn
+2026-06-03 09:48:13,150 - INFO - Inject lora to: model.decoder.layers.5.self_attn
+2026-06-03 09:48:13,191 - INFO - Inject lora to: model.decoder.layers.6.self_attn
+2026-06-03 09:48:13,231 - INFO - Inject lora to: model.decoder.layers.7.self_attn
+2026-06-03 09:48:13,272 - INFO - Inject lora to: model.decoder.layers.8.self_attn
+2026-06-03 09:48:13,314 - INFO - Inject lora to: model.decoder.layers.9.self_attn
+2026-06-03 09:48:13,355 - INFO - Inject lora to: model.decoder.layers.10.self_attn
+2026-06-03 09:48:13,396 - INFO - Inject lora to: model.decoder.layers.11.self_attn
+2026-06-03 09:48:13,436 - INFO - Inject lora to: model.decoder.layers.12.self_attn
+2026-06-03 09:48:13,476 - INFO - Inject lora to: model.decoder.layers.13.self_attn
+2026-06-03 09:48:13,517 - INFO - Inject lora to: model.decoder.layers.14.self_attn
+2026-06-03 09:48:13,558 - INFO - Inject lora to: model.decoder.layers.15.self_attn
+2026-06-03 09:48:13,598 - INFO - Inject lora to: model.decoder.layers.16.self_attn
+2026-06-03 09:48:13,640 - INFO - Inject lora to: model.decoder.layers.17.self_attn
+2026-06-03 09:48:13,681 - INFO - Inject lora to: model.decoder.layers.18.self_attn
+2026-06-03 09:48:13,722 - INFO - Inject lora to: model.decoder.layers.19.self_attn
+2026-06-03 09:48:13,763 - INFO - Inject lora to: model.decoder.layers.20.self_attn
+2026-06-03 09:48:13,805 - INFO - Inject lora to: model.decoder.layers.21.self_attn
+2026-06-03 09:48:13,845 - INFO - Inject lora to: model.decoder.layers.22.self_attn
+2026-06-03 09:48:13,885 - INFO - Inject lora to: model.decoder.layers.23.self_attn
+PACZeroArguments(
+_n_gpu=1,
+ablation=none,
+adafactor=False,
+adam_beta1=0.9,
+adam_beta2=0.999,
+adam_epsilon=1e-08,
+auto_find_batch_size=False,
+bf16=False,
+bf16_full_eval=False,
+data_seed=None,
+dataloader_drop_last=False,
+dataloader_num_workers=0,
+dataloader_pin_memory=True,
+ddp_bucket_cap_mb=None,
+ddp_find_unused_parameters=None,
+ddp_timeout=1800,
+debug=[],
+deepspeed=None,
+disable_tqdm=False,
+do_eval=True,
+do_predict=False,
+do_train=False,
+eos_token=<EOS_TOKEN>,
+eval_accumulation_steps=None,
+eval_delay=0,
+eval_steps=5,
+evaluation_strategy=steps,
+fp16=False,
+fp16_backend=auto,
+fp16_full_eval=False,
+fp16_opt_level=O1,
+fsdp=[],
+fsdp_config={'fsdp_min_num_params': 0, 'xla': False, 'xla_fsdp_grad_ckpt': False},
+fsdp_min_num_params=0,
+fsdp_transformer_layer_cls_to_wrap=None,
+full_determinism=False,
+gradient_accumulation_steps=1,
+gradient_checkpointing=False,
+greater_is_better=None,
+group_by_length=False,
+half_precision_backend=auto,
+head_tuning=False,
+hub_model_id=None,
+hub_private_repo=False,
+hub_strategy=every_save,
+hub_token=<HUB_TOKEN>,
+icl_sfc=False,
+ignore_data_skip=False,
+include_inputs_for_metrics=False,
+jit_mode_eval=False,
+label_names=None,
+label_smoothing_factor=0.0,
+learning_rate=0.0005,
+length_column_name=length,
+linear_probing=False,
+load_best_model_at_end=False,
+load_bfloat16=False,
+load_float16=True,
+load_int8=False,
+local_rank=-1,
+log_level=passive,
+log_level_replica=warning,
+log_on_each_node=True,
+logging_dir=/mnt/c/Users/admin/actions-runner/_work/mlx-on-cuda/mlx-on-cuda/_work/paczero/result/runs/sst2_1p3b_lora_pacmi_mi033_s0/checkpoints/runs/Jun03_09-48-00_MININT-AMVHAE1,
+logging_first_step=False,
+logging_nan_inf_filter=True,
+logging_steps=20,
+logging_strategy=steps,
+lora=True,
+lora_alpha=16,
+lora_r=8,
+lp_early_stopping=False,
+lr_scheduler_type=polynomial,
+max_grad_norm=1.0,
+max_length=2048,
+max_new_tokens=50,
+max_steps=5,
+metric_for_best_model=None,
+model_name=facebook/opt-1.3b,
+mp_parameters=,
+no_auto_device=False,
+no_cuda=False,
+no_eval=False,
+no_privacy=False,
+no_reparam=True,
+non_diff=False,
+num_beams=1,
+num_dev=10,
+num_eval=20,
+num_prefix=5,
+num_train=128,
+num_train_epochs=3.0,
+num_train_sets=None,
+only_train_option=True,
+optim=adamw_hf,
+optim_args=None,
+output_dir=/mnt/c/Users/admin/actions-runner/_work/mlx-on-cuda/mlx-on-cuda/_work/paczero/result/runs/sst2_1p3b_lora_pacmi_mi033_s0/checkpoints,
+overwrite_output_dir=True,
+pac_adaptive_mi=True,
+pac_clip=25.0,
+pac_disjoint_pairs=False,
+pac_k=1,
+pac_load_best_dev=False,
+pac_m=128,
+pac_mi=0.33,
+pac_sampling_rate=-1,
+pac_secret_id=-1,
+pac_zpl=False,
+past_index=-1,
+per_device_eval_batch_size=8,
+per_device_train_batch_size=128,
+prediction_loss_only=False,
+prefix_init_by_real_act=True,
+prefix_tuning=False,
+push_to_hub=False,
+push_to_hub_model_id=None,
+push_to_hub_organization=None,
+push_to_hub_token=<PUSH_TO_HUB_TOKEN>,
+ray_scope=last,
+remove_unused_columns=True,
+report_to=[],
+result_file=/mnt/c/Users/admin/actions-runner/_work/mlx-on-cuda/mlx-on-cuda/_work/paczero/result/runs/sst2_1p3b_lora_pacmi_mi033_s0/metrics.json,
+resume_from_checkpoint=None,
+run_name=/mnt/c/Users/admin/actions-runner/_work/mlx-on-cuda/mlx-on-cuda/_work/paczero/result/runs/sst2_1p3b_lora_pacmi_mi033_s0/checkpoints,
+sampling=False,
+save_model=False,
+save_on_each_node=False,
+save_on_interrupt=False,
+save_safetensors=False,
+save_steps=500,
+save_strategy=steps,
+save_total_limit=None,
+seed=42,
+sfc=False,
+sharded_ddp=[],
+skip_memory_metrics=True,
+tag=sst2_1p3b_lora_pacmi_mi033_s0,
+task_name=SST2,
+temperature=1.0,
+tf32=None,
+top_k=None,
+top_p=0.95,
+torch_compile=False,
+torch_compile_backend=None,
+torch_compile_mode=None,
+torchdynamo=None,
+tpu_metrics_debug=False,
+tpu_num_cores=None,
+train_as_classification=True,
+train_set_seed=0,
+trainer=zo,
+untie_emb=False,
+use_ipex=False,
+use_legacy_prediction_loop=False,
+use_mps_device=False,
+verbose=False,
+warmup_ratio=0.0,
+warmup_steps=0,
+weight_decay=0.0,
+xpu_backend=None,
+zo_eps=0.001,
+)
+model.decoder.layers.0.self_attn.v_proj.lora_A
+model.decoder.layers.0.self_attn.v_proj.lora_B
+model.decoder.layers.0.self_attn.q_proj.lora_A
+model.decoder.layers.0.self_attn.q_proj.lora_B
+model.decoder.layers.1.self_attn.v_proj.lora_A
+model.decoder.layers.1.self_attn.v_proj.lora_B
+model.decoder.layers.1.self_attn.q_proj.lora_A
+model.decoder.layers.1.self_attn.q_proj.lora_B
+model.decoder.layers.2.self_attn.v_proj.lora_A
+model.decoder.layers.2.self_attn.v_proj.lora_B
+model.decoder.layers.2.self_attn.q_proj.lora_A
+model.decoder.layers.2.self_attn.q_proj.lora_B
+model.decoder.layers.3.self_attn.v_proj.lora_A
+model.decoder.layers.3.self_attn.v_proj.lora_B
+model.decoder.layers.3.self_attn.q_proj.lora_A
+model.decoder.layers.3.self_attn.q_proj.lora_B
+model.decoder.layers.4.self_attn.v_proj.lora_A
+model.decoder.layers.4.self_attn.v_proj.lora_B
+model.decoder.layers.4.self_attn.q_proj.lora_A
+model.decoder.layers.4.self_attn.q_proj.lora_B
+model.decoder.layers.5.self_attn.v_proj.lora_A
+model.decoder.layers.5.self_attn.v_proj.lora_B
+model.decoder.layers.5.self_attn.q_proj.lora_A
+model.decoder.layers.5.self_attn.q_proj.lora_B
+model.decoder.layers.6.self_attn.v_proj.lora_A
+model.decoder.layers.6.self_attn.v_proj.lora_B
+model.decoder.layers.6.self_attn.q_proj.lora_A
+model.decoder.layers.6.self_attn.q_proj.lora_B
+model.decoder.layers.7.self_attn.v_proj.lora_A
+model.decoder.layers.7.self_attn.v_proj.lora_B
+model.decoder.layers.7.self_attn.q_proj.lora_A
+model.decoder.layers.7.self_attn.q_proj.lora_B
+model.decoder.layers.8.self_attn.v_proj.lora_A
+model.decoder.layers.8.self_attn.v_proj.lora_B
+model.decoder.layers.8.self_attn.q_proj.lora_A
+model.decoder.layers.8.self_attn.q_proj.lora_B
+model.decoder.layers.9.self_attn.v_proj.lora_A
+model.decoder.layers.9.self_attn.v_proj.lora_B
+model.decoder.layers.9.self_attn.q_proj.lora_A
+model.decoder.layers.9.self_attn.q_proj.lora_B
+model.decoder.layers.10.self_attn.v_proj.lora_A
+model.decoder.layers.10.self_attn.v_proj.lora_B
+model.decoder.layers.10.self_attn.q_proj.lora_A
+model.decoder.layers.10.self_attn.q_proj.lora_B
+model.decoder.layers.11.self_attn.v_proj.lora_A
+model.decoder.layers.11.self_attn.v_proj.lora_B
+model.decoder.layers.11.self_attn.q_proj.lora_A
+model.decoder.layers.11.self_attn.q_proj.lora_B
+model.decoder.layers.12.self_attn.v_proj.lora_A
+model.decoder.layers.12.self_attn.v_proj.lora_B
+model.decoder.layers.12.self_attn.q_proj.lora_A
+model.decoder.layers.12.self_attn.q_proj.lora_B
+model.decoder.layers.13.self_attn.v_proj.lora_A
+model.decoder.layers.13.self_attn.v_proj.lora_B
+model.decoder.layers.13.self_attn.q_proj.lora_A
+model.decoder.layers.13.self_attn.q_proj.lora_B
+model.decoder.layers.14.self_attn.v_proj.lora_A
+model.decoder.layers.14.self_attn.v_proj.lora_B
+model.decoder.layers.14.self_attn.q_proj.lora_A
+model.decoder.layers.14.self_attn.q_proj.lora_B
+model.decoder.layers.15.self_attn.v_proj.lora_A
+model.decoder.layers.15.self_attn.v_proj.lora_B
+model.decoder.layers.15.self_attn.q_proj.lora_A
+model.decoder.layers.15.self_attn.q_proj.lora_B
+model.decoder.layers.16.self_attn.v_proj.lora_A
+model.decoder.layers.16.self_attn.v_proj.lora_B
+model.decoder.layers.16.self_attn.q_proj.lora_A
+model.decoder.layers.16.self_attn.q_proj.lora_B
+model.decoder.layers.17.self_attn.v_proj.lora_A
+model.decoder.layers.17.self_attn.v_proj.lora_B
+model.decoder.layers.17.self_attn.q_proj.lora_A
+model.decoder.layers.17.self_attn.q_proj.lora_B
+model.decoder.layers.18.self_attn.v_proj.lora_A
+model.decoder.layers.18.self_attn.v_proj.lora_B
+model.decoder.layers.18.self_attn.q_proj.lora_A
+model.decoder.layers.18.self_attn.q_proj.lora_B
+model.decoder.layers.19.self_attn.v_proj.lora_A
+model.decoder.layers.19.self_attn.v_proj.lora_B
+model.decoder.layers.19.self_attn.q_proj.lora_A
+model.decoder.layers.19.self_attn.q_proj.lora_B
+model.decoder.layers.20.self_attn.v_proj.lora_A
+model.decoder.layers.20.self_attn.v_proj.lora_B
+model.decoder.layers.20.self_attn.q_proj.lora_A
+model.decoder.layers.20.self_attn.q_proj.lora_B
+model.decoder.layers.21.self_attn.v_proj.lora_A
+model.decoder.layers.21.self_attn.v_proj.lora_B
+model.decoder.layers.21.self_attn.q_proj.lora_A
+model.decoder.layers.21.self_attn.q_proj.lora_B
+model.decoder.layers.22.self_attn.v_proj.lora_A
+2026-06-03 09:48:13,931 - INFO - Tokenizing training samples...
+2026-06-03 09:48:13,997 - INFO - Done with 0.07s
+/mnt/c/Users/admin/actions-runner/_work/_tool/Python/3.9.25/x64/lib/python3.9/site-packages/transformers/optimization.py:391: FutureWarning: This implementation of AdamW is deprecated and will be removed in a future version. Use the PyTorch implementation torch.optim.AdamW instead, or set `no_deprecation_warning=True` to disable this warning
+  warnings.warn(
+2026-06-03 09:48:14,036 - INFO - ***** Running PACZero training *****
+2026-06-03 09:48:14,036 - INFO -   Num examples = 128
+2026-06-03 09:48:14,036 - INFO -   Num Epochs = 5
+2026-06-03 09:48:14,036 - INFO -   Total optimization steps = 5
+2026-06-03 09:48:14,036 - INFO -   Trainable parameters = 1,572,864
+model.decoder.layers.22.self_attn.v_proj.lora_B
+model.decoder.layers.22.self_attn.q_proj.lora_A
+model.decoder.layers.22.self_attn.q_proj.lora_B
+model.decoder.layers.23.self_attn.v_proj.lora_A
+model.decoder.layers.23.self_attn.v_proj.lora_B
+model.decoder.layers.23.self_attn.q_proj.lora_A
+model.decoder.layers.23.self_attn.q_proj.lora_B
+============================================================
+  MODE: PACZO v4 (sign-quantized, exact binary MI); allocation: ADAPTIVE (beta_t = remaining/T-t)
+  K=1, M=128, total_MI=0.33, per_step_MI=0.06600000
+  secret_id=102, clip=25.0
+  max_steps=5, trainable_params=1,572,864
+============================================================
+  0%|          | 0/5 [00:00<?, ?it/s]                                       0%|          | 0/5 [00:01<?, ?it/s] 20%|██        | 1/5 [00:01<00:07,  1.87s/it] 40%|████      | 2/5 [00:03<00:05,  1.70s/it] 60%|██████    | 3/5 [00:05<00:03,  1.64s/it] 80%|████████  | 4/5 [00:06<00:01,  1.59s/it]100%|██████████| 5/5 [00:08<00:00,  1.59s/it]{'signal_raw': 5.351776736424021, 'q_plus': 0.0, 'agreement_frac': 1.0, 'sigma_used': 0.0, 'cum_mi': 0.0, 'free_frac': 1.0, 'entropy_ratio': 1.0, 'clip_fired_frac': 0.078125, 'epoch': 0}
+
+  0%|          | 0/2 [00:00<?, ?it/s][A                                             
+                                     [A100%|██████████| 5/5 [00:08<00:00,  1.59s/it]
+100%|██████████| 2/2 [00:00<00:00, 87.54it/s][A
+                                             [A2026-06-03 09:48:22,231 - INFO - 
+
+Training completed.
+
+
+                                             100%|██████████| 5/5 [00:08<00:00,  1.59s/it]100%|██████████| 5/5 [00:08<00:00,  1.64s/it]
+2026-06-03 09:48:22,234 - INFO - There are 20 training samples and 20 validation samples
+{'eval_loss': 1.1533203125, 'eval_runtime': 0.0591, 'eval_samples_per_second': 169.228, 'eval_steps_per_second': 33.846, 'epoch': 5}
+{'train_runtime': 8.1953, 'train_samples_per_second': 78.093, 'train_steps_per_second': 0.61, 'train_loss': 0.85654296875, 'epoch': 5}
+  0%|          | 0/20 [00:00<?, ?it/s]2026-06-03 09:48:22,234 - INFO - ========= Example =========
+2026-06-03 09:48:22,234 - INFO - Candidate: [0, 1]
+2026-06-03 09:48:22,234 - INFO - Correct candidate: 1
+2026-06-03 09:48:22,264 - INFO - === Candidate 0 ===
+2026-06-03 09:48:22,265 - INFO - <s>the special effects and many scenes of weightlessness look as good or better than in the original, while the oscar-winning sound and james horner's rousing score make good use of the hefty audio system. It was terrible
+2026-06-03 09:48:22,272 - INFO - Log probabilities of the option tokens: tensor([-9.6875], dtype=torch.float16)
+2026-06-03 09:48:22,296 - INFO - === Candidate 1 (without context)===
+2026-06-03 09:48:22,297 - INFO - <s>the special effects and many scenes of weightlessness look as good or better than in the original, while the oscar-winning sound and james horner's rousing score make good use of the hefty audio system. It was great
+2026-06-03 09:48:22,297 - INFO - Log probabilities of the option tokens: tensor([-4.9492], dtype=torch.float16)
+2026-06-03 09:48:22,297 - INFO - Prediction scores: [-9.6875, -4.94921875]
+2026-06-03 09:48:22,298 - INFO - ========= Example =========
+2026-06-03 09:48:22,298 - INFO - Candidate: [0, 1]
+2026-06-03 09:48:22,298 - INFO - Correct candidate: 0
+2026-06-03 09:48:22,320 - INFO - === Candidate 0 ===
+2026-06-03 09:48:22,320 - INFO - <s>well-nigh unendurable... though the picture strains to become cinematic poetry, it remains depressingly prosaic and dull. It was terrible
+2026-06-03 09:48:22,321 - INFO - Log probabilities of the option tokens: tensor([-8.1172], dtype=torch.float16)
+2026-06-03 09:48:22,335 - INFO - === Candidate 1 (without context)===
+2026-06-03 09:48:22,335 - INFO - <s>well-nigh unendurable... though the picture strains to become cinematic poetry, it remains depressingly prosaic and dull. It was great
+2026-06-03 09:48:22,335 - INFO - Log probabilities of the option tokens: tensor([-6.3203], dtype=torch.float16)
+2026-06-03 09:48:22,335 - INFO - Prediction scores: [-8.1171875, -6.3203125]
+ 10%|█         | 2/20 [00:00<00:00, 19.88it/s]2026-06-03 09:48:22,335 - INFO - ========= Example =========
+2026-06-03 09:48:22,335 - INFO - Candidate: [0, 1]
+2026-06-03 09:48:22,335 - INFO - Correct candidate: 0
+2026-06-03 09:48:22,350 - INFO - === Candidate 0 ===
+2026-06-03 09:48:22,350 - INFO - <s>i've always dreamed of attending cannes, but after seeing this film, it's not that big a deal. It was terrible
+2026-06-03 09:48:22,351 - INFO - Log probabilities of the option tokens: tensor([-8.0156], dtype=torch.float16)
+2026-06-03 09:48:22,365 - INFO - === Candidate 1 (without context)===
+2026-06-03 09:48:22,365 - INFO - <s>i've always dreamed of attending cannes, but after seeing this film, it's not that big a deal. It was great
+2026-06-03 09:48:22,365 - INFO - Log probabilities of the option tokens: tensor([-3.2422], dtype=torch.float16)
+2026-06-03 09:48:22,365 - INFO - Prediction scores: [-8.015625, -3.2421875]
+ 30%|███       | 6/20 [00:00<00:00, 28.99it/s] 50%|█████     | 10/20 [00:00<00:00, 32.10it/s] 70%|███████   | 14/20 [00:00<00:00, 33.19it/s] 90%|█████████ | 18/20 [00:00<00:00, 33.29it/s]100%|██████████| 20/20 [00:00<00:00, 32.25it/s]
+2026-06-03 09:48:22,855 - INFO - There are 10 training samples and 10 validation samples
+  0%|          | 0/10 [00:00<?, ?it/s]2026-06-03 09:48:22,855 - INFO - ========= Example =========
+2026-06-03 09:48:22,855 - INFO - Candidate: [0, 1]
+2026-06-03 09:48:22,855 - INFO - Correct candidate: 1
+2026-06-03 09:48:22,869 - INFO - === Candidate 0 ===
+2026-06-03 09:48:22,869 - INFO - <s>refreshingly realistic, affectation-free It was terrible
+2026-06-03 09:48:22,869 - INFO - Log probabilities of the option tokens: tensor([-8.6328], dtype=torch.float16)
+2026-06-03 09:48:22,883 - INFO - === Candidate 1 (without context)===
+2026-06-03 09:48:22,883 - INFO - <s>refreshingly realistic, affectation-free It was great
+2026-06-03 09:48:22,883 - INFO - Log probabilities of the option tokens: tensor([-4.6172], dtype=torch.float16)
+2026-06-03 09:48:22,883 - INFO - Prediction scores: [-8.6328125, -4.6171875]
+2026-06-03 09:48:22,883 - INFO - ========= Example =========
+2026-06-03 09:48:22,883 - INFO - Candidate: [0, 1]
+2026-06-03 09:48:22,883 - INFO - Correct candidate: 0
+2026-06-03 09:48:22,898 - INFO - === Candidate 0 ===
+2026-06-03 09:48:22,898 - INFO - <s>furiously, their capacity to explain themselves has gone the same way as their natural instinct for self-preservation It was terrible
+2026-06-03 09:48:22,898 - INFO - Log probabilities of the option tokens: tensor([-8.8438], dtype=torch.float16)
+2026-06-03 09:48:22,912 - INFO - === Candidate 1 (without context)===
+2026-06-03 09:48:22,912 - INFO - <s>furiously, their capacity to explain themselves has gone the same way as their natural instinct for self-preservation It was great
+2026-06-03 09:48:22,912 - INFO - Log probabilities of the option tokens: tensor([-6.8828], dtype=torch.float16)
+2026-06-03 09:48:22,912 - INFO - Prediction scores: [-8.84375, -6.8828125]
+2026-06-03 09:48:22,912 - INFO - ========= Example =========
+2026-06-03 09:48:22,912 - INFO - Candidate: [0, 1]
+2026-06-03 09:48:22,912 - INFO - Correct candidate: 0
+2026-06-03 09:48:22,926 - INFO - === Candidate 0 ===
+2026-06-03 09:48:22,927 - INFO - <s>it's also uninspired, lacking the real talent and wit to elevate it beyond its formula to the level of classic romantic comedy to which it aspires. It was terrible
+2026-06-03 09:48:22,927 - INFO - Log probabilities of the option tokens: tensor([-7.5039], dtype=torch.float16)
+2026-06-03 09:48:22,940 - INFO - === Candidate 1 (without context)===
+2026-06-03 09:48:22,940 - INFO - <s>it's also uninspired, lacking the real talent and wit to elevate it beyond its formula to the level of classic romantic comedy to which it aspires. It was great
+2026-06-03 09:48:22,941 - INFO - Log probabilities of the option tokens: tensor([-5.6836], dtype=torch.float16)
+2026-06-03 09:48:22,941 - INFO - Prediction scores: [-7.50390625, -5.68359375]
+ 40%|████      | 4/10 [00:00<00:00, 34.95it/s] 80%|████████  | 8/10 [00:00<00:00, 35.79it/s]100%|██████████| 10/10 [00:00<00:00, 36.09it/s]
+2026-06-03 09:48:23,132 - INFO - ===== Train set 0 =====
+2026-06-03 09:48:23,132 - INFO - {'accuracy': 0.5, 'dev_accuracy': 0.3}
+PACZero smoke exit code: 0
+
+--- Result files ---
+result/runs/sst2_1p3b_lora_pacmi_mi033_s0/metrics.json
+
+--- Metrics ---
+result/runs/sst2_1p3b_lora_pacmi_mi033_s0/metrics.json
+{
+    "accuracy": 0.5,
+    "dev_accuracy": 0.3
+}
+--- Final result ---
+PACZero workflow exit code: 0
