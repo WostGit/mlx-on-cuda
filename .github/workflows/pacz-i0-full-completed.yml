@@ -1,0 +1,80 @@
+name: PACZero 1.3B I0 completion marker
+
+on:
+  workflow_run:
+    workflows:
+      - PACZero 1.3B I0 full clean
+    types:
+      - completed
+    branches:
+      - experiment/pacz-i0-full-clean-20260603
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: pacz-i0-full-completion-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  completion:
+    name: Mark reproduction completion
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.head_branch == 'experiment/pacz-i0-full-clean-20260603' }}
+
+    steps:
+      - name: Check out completed branch
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/pacz-i0-full-clean-20260603
+          persist-credentials: true
+
+      - name: Write completion marker
+        env:
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_STATUS: ${{ github.event.workflow_run.status }}
+          WR_ID: ${{ github.event.workflow_run.id }}
+          WR_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          WR_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_HTML_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          LOG_DIR="logs/pacz-i0-full-clean/completion"
+          mkdir -p "${LOG_DIR}"
+          OUT="${LOG_DIR}/workflow-run-${WR_ID}.json"
+          LATEST="${LOG_DIR}/latest.json"
+          cat > "${OUT}" <<JSON
+          {
+            "workflow": "PACZero 1.3B I0 full clean",
+            "workflow_run_id": "${WR_ID}",
+            "run_number": "${WR_RUN_NUMBER}",
+            "run_attempt": "${WR_ATTEMPT}",
+            "status": "${WR_STATUS}",
+            "conclusion": "${WR_CONCLUSION}",
+            "head_branch": "${WR_HEAD_BRANCH}",
+            "head_sha": "${WR_HEAD_SHA}",
+            "html_url": "${WR_HTML_URL}",
+            "completion_marker_utc": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          }
+          JSON
+          cp "${OUT}" "${LATEST}"
+          cat "${LATEST}"
+
+      - name: Commit completion marker
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add logs/pacz-i0-full-clean/completion
+          if git diff --cached --quiet; then
+            echo "No completion marker changes to commit."
+          else
+            git commit -m "Mark PACZero I0 full reproduction workflow completion"
+            git push
+          fi
