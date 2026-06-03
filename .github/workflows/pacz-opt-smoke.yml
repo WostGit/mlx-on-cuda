@@ -1,19 +1,23 @@
-name: PACZero OPT smoke
+name: PACZero OPT I0 smoke
 
 on:
   push:
     branches:
       - experiment/pacz-opt-20260603
-    paths-ignore:
-      - "logs/pacz-opt/**"
+    paths:
+      - "experiments/pacz-opt-i0-trigger-*.md"
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: pacz-opt-i0-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   paczero:
-    name: Run PACZero OPT-1.3B smoke experiment
+    name: Run PACZero OPT-1.3B I0 smoke experiment
     runs-on: self-hosted
     timeout-minutes: 60
 
@@ -28,13 +32,13 @@ jobs:
         with:
           python-version: "3.9"
 
-      - name: Run PACZero OPT smoke experiment, save logs, and push them
+      - name: Run PACZero OPT I0 smoke experiment, save logs, and push them
         shell: bash
         run: |
           set -uo pipefail
 
           ROOT_DIR="${PWD}"
-          LOG_DIR="${ROOT_DIR}/logs/pacz-opt"
+          LOG_DIR="${ROOT_DIR}/logs/pacz-opt-i0"
           LOG_FILE="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           LATEST_LOG="${LOG_DIR}/latest.log"
           WORK_PARENT="${ROOT_DIR}/_work"
@@ -42,8 +46,8 @@ jobs:
           mkdir -p "${LOG_DIR}" "${WORK_PARENT}"
 
           {
-            echo "PACZero OPT-1.3B smoke experiment"
-            echo "===================================="
+            echo "PACZero OPT-1.3B I=0 smoke experiment"
+            echo "======================================"
             echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Repository: ${GITHUB_REPOSITORY}"
             echo "Ref: ${GITHUB_REF}"
@@ -81,10 +85,11 @@ jobs:
             python -m pip install -r requirements.txt
             echo
 
-            echo "--- Run PACZero smoke script ---"
-            bash scripts/smoke.sh
+            echo "--- Run PACZero OPT-1.3B LoRA PAC-MI I=0 smoke script ---"
+            source scripts/_common.sh
+            SMOKE=1 SMOKE_STEPS=5 SMOKE_EVAL=5 run_pacmi sst2_1p3b_lora_pacmi_mi000_s0 facebook/opt-1.3b SST2 lora 5e-4 25 2000 0.0 128 0
             smoke_status=$?
-            echo "PACZero smoke exit code: ${smoke_status}"
+            echo "PACZero I=0 smoke exit code: ${smoke_status}"
             echo
 
             echo "--- Result files ---"
@@ -102,7 +107,7 @@ jobs:
           {
             echo
             echo "--- Final result ---"
-            echo "PACZero workflow exit code: ${run_status}"
+            echo "PACZero I=0 workflow exit code: ${run_status}"
           } | tee -a "${LOG_FILE}"
 
           cp "${LOG_FILE}" "${LATEST_LOG}"
@@ -112,10 +117,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Remove untracked experiment workspace before any git pull/rebase.
           rm -rf "${WORK_PARENT}"
 
-          # Sync first, then add and commit only the logs.
           git pull --rebase origin "${GITHUB_REF_NAME}" 2>&1 | tee -a "${LOG_FILE}"
           pull_status=${PIPESTATUS[0]}
 
@@ -123,19 +126,19 @@ jobs:
             echo "Git pull --rebase exit code: ${pull_status}" | tee -a "${LOG_FILE}"
             push_status="${pull_status}"
           else
-            git add "logs/pacz-opt"
+            git add "logs/pacz-opt-i0"
             if git diff --cached --quiet; then
               echo "No log changes to commit." | tee -a "${LOG_FILE}"
               push_status=0
             else
-              git commit -m "Add PACZero OPT smoke logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+              git commit -m "Add PACZero I0 smoke logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
               git push 2>&1 | tee -a "${LOG_FILE}"
               push_status=${PIPESTATUS[0]}
             fi
           fi
 
-          echo "Log file: logs/pacz-opt/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          echo "Latest log: logs/pacz-opt/latest.log"
+          echo "Log file: logs/pacz-opt-i0/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          echo "Latest log: logs/pacz-opt-i0/latest.log"
           echo "Git push exit code: ${push_status}"
 
           if [ "${run_status}" -ne 0 ]; then
