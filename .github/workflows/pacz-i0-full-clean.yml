@@ -1,0 +1,206 @@
+name: PACZero 1.3B I0 full clean
+
+on:
+  push:
+    branches:
+      - experiment/pacz-i0-full-clean-20260603
+    paths:
+      - "experiments/run-pacz-i0-full-clean-20260603.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pacz-i0-full-clean-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reproduce:
+    name: Reproduce PACZero 1.3B I0 claims
+    runs-on: self-hosted
+    timeout-minutes: 480
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Run reproduction and always commit logs
+        shell: bash
+        env:
+          LOG_SUBDIR: logs/pacz-i0-full-clean
+        run: |
+          set -u
+
+          ROOT_DIR="${PWD}"
+          LOG_DIR="${ROOT_DIR}/${LOG_SUBDIR}"
+          LOG_FILE="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          LATEST_LOG="${LOG_DIR}/latest.log"
+          METRICS_JSONL="${LOG_DIR}/metrics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
+          LATEST_METRICS="${LOG_DIR}/latest-metrics.jsonl"
+          WORK_PARENT="${ROOT_DIR}/_work"
+          WORK_DIR="${WORK_PARENT}/paczero"
+          mkdir -p "${LOG_DIR}" "${WORK_PARENT}"
+
+          run_status=0
+
+          {
+            echo "PACZero 1.3B I=0 / PAC-ZPL full reproduction"
+            echo "==============================================="
+            echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "SHA: ${GITHUB_SHA}"
+            echo "Run ID: ${GITHUB_RUN_ID}"
+            echo "Run attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "Runner name: ${RUNNER_NAME:-unknown}"
+            echo "Runner OS: ${RUNNER_OS:-unknown}"
+            echo "Runner arch: ${RUNNER_ARCH:-unknown}"
+            echo
+
+            echo "--- System ---"
+            uname -a
+            echo
+
+            echo "--- NVIDIA ---"
+            command -v nvidia-smi || true
+            nvidia-smi || true
+            echo
+
+            echo "--- Python ---"
+            python --version
+            python -m pip --version
+            echo
+
+            echo "--- Clone PACZero ---"
+            rm -rf "${WORK_DIR}"
+            if ! git clone --depth 1 https://github.com/bilgehanertan/paczero.git "${WORK_DIR}"; then
+              echo "FAILED: git clone PACZero"
+              run_status=10
+            else
+              cd "${WORK_DIR}"
+              PACZERO_SHA="$(git rev-parse HEAD)"
+              echo "PACZero SHA: ${PACZERO_SHA}"
+              echo
+
+              echo "--- Install dependencies ---"
+              if ! python -m pip install --upgrade pip; then
+                echo "FAILED: pip upgrade"
+                run_status=11
+              elif ! python -m pip install -r requirements.txt; then
+                echo "FAILED: requirements install"
+                run_status=12
+              else
+                echo
+                echo "--- Script set: OPT-1.3B PAC-ZPL / I=0 Table 1 cells ---"
+                scripts=(
+                  scripts/headline/sst2_1p3b_lora_paczpl_s1.sh
+                  scripts/headline/sst2_1p3b_lora_paczpl_s2.sh
+                  scripts/headline/sst2_1p3b_lora_paczpl_s3.sh
+                  scripts/headline/sst2_1p3b_ft_paczpl_s0.sh
+                  scripts/headline/sst2_1p3b_ft_paczpl_s1.sh
+                  scripts/headline/sst2_1p3b_ft_paczpl_s2.sh
+                  scripts/headline/squad_1p3b_lora_paczpl_s0.sh
+                  scripts/headline/squad_1p3b_ft_paczpl_s0.sh
+                  scripts/headline/squad_1p3b_ft_paczpl_s1.sh
+                  scripts/headline/squad_1p3b_ft_paczpl_s2.sh
+                )
+                printf '%s\n' "${scripts[@]}"
+                echo
+
+                for script in "${scripts[@]}"; do
+                  echo "============================================================"
+                  echo "START ${script}"
+                  echo "UTC start: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+                  echo "============================================================"
+                  if bash "${script}"; then
+                    status=0
+                  else
+                    status=$?
+                  fi
+                  echo "UTC end: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+                  echo "EXIT ${script}: ${status}"
+                  echo
+                  if [ "${status}" -ne 0 ]; then
+                    run_status="${status}"
+                    break
+                  fi
+                done
+
+                echo "--- Collect metrics ---"
+                : > "${METRICS_JSONL}"
+                python - <<'PY'
+          import glob, json, os
+
+          out_path = os.environ["METRICS_JSONL"]
+          paths = sorted(glob.glob("result/runs/*/metrics.json"))
+          rows = []
+          for path in paths:
+              run_id = os.path.basename(os.path.dirname(path))
+              with open(path, "r", encoding="utf-8") as f:
+                  metrics = json.load(f)
+              rows.append({"run_id": run_id, "metrics_path": path, "metrics": metrics})
+          with open(out_path, "w", encoding="utf-8") as f:
+              for row in rows:
+                  f.write(json.dumps(row, sort_keys=True) + "\n")
+          for row in rows:
+              print(json.dumps(row, sort_keys=True))
+          PY
+                cat "${METRICS_JSONL}" || true
+              fi
+            fi
+
+            echo
+            echo "--- Reproduction status ---"
+            echo "run_status=${run_status}"
+          } 2>&1 | tee "${LOG_FILE}"
+
+          cd "${ROOT_DIR}"
+          cp "${LOG_FILE}" "${LATEST_LOG}"
+          if [ -f "${METRICS_JSONL}" ]; then
+            cp "${METRICS_JSONL}" "${LATEST_METRICS}"
+          fi
+
+          {
+            echo
+            echo "--- Commit logs ---"
+            git status --short
+          } | tee -a "${LOG_FILE}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf "${WORK_PARENT}"
+
+          git pull --rebase origin "${GITHUB_REF_NAME}" 2>&1 | tee -a "${LOG_FILE}"
+          pull_status=${PIPESTATUS[0]}
+          if [ "${pull_status}" -eq 0 ]; then
+            git add "${LOG_SUBDIR}"
+            if git diff --cached --quiet; then
+              echo "No log changes to commit." | tee -a "${LOG_FILE}"
+              push_status=0
+            else
+              git commit -m "Add clean PACZero I0 full reproduction logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+              git push 2>&1 | tee -a "${LOG_FILE}"
+              push_status=${PIPESTATUS[0]}
+            fi
+          else
+            echo "Git pull --rebase exit code: ${pull_status}" | tee -a "${LOG_FILE}"
+            push_status="${pull_status}"
+          fi
+
+          echo "Log file: ${LOG_SUBDIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log" | tee -a "${LOG_FILE}"
+          echo "Latest log: ${LOG_SUBDIR}/latest.log" | tee -a "${LOG_FILE}"
+          echo "Metrics JSONL: ${LOG_SUBDIR}/metrics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" | tee -a "${LOG_FILE}"
+          echo "Git push exit code: ${push_status}" | tee -a "${LOG_FILE}"
+          echo "Workflow exit code: ${run_status}" | tee -a "${LOG_FILE}"
+
+          if [ "${push_status}" -ne 0 ]; then
+            exit "${push_status}"
+          fi
+          exit "${run_status}"
