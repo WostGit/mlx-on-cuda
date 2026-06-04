@@ -2,6 +2,8 @@ name: MLX model benchmark
 
 on:
   push:
+    branches-ignore:
+      - experiment/pacz-i0-full-clean-20260603
     paths-ignore:
       - "logs/mlx-model-benchmark/**"
       - "logs/mlx-cuda-smoke/**"
