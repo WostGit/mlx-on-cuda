@@ -2,6 +2,8 @@ name: MLX model benchmark
 
 on:
   push:
+    branches-ignore:
+      - experiment/pacz-reset-20260604
     paths-ignore:
       - "logs/mlx-model-benchmark/**"
       - "logs/mlx-cuda-smoke/**"
@@ -10,7 +12,7 @@ on:
       models:
         description: "Comma-separated model ids to benchmark"
         required: false
-        default: "Qwen/Qwen3-0.6B,Qwen/Qwen3-1.7B,Qwen/Qwen2.5-3B-Instruct,Qwen/Qwen3-4B,Qwen/Qwen3-8B"
+        default: "Qwen/Qwen3-0.6B,Qwen/Qwen3-1.7B,Qwen/Qwen2.5-3B-Instruct,Qwen/Qwen3-4B,Qwen3-8B"
       max_tokens:
         description: "Generated tokens per model"
         required: false
