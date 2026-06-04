@@ -5,6 +5,7 @@ on:
     paths-ignore:
       - "logs/mlx-model-benchmark/**"
       - "logs/mlx-cuda-smoke/**"
+      - "experiments/run-pacz-main-i0-20260604.md"
   workflow_dispatch:
     inputs:
       models:
