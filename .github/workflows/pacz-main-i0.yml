@@ -1,0 +1,283 @@
+name: PACZero main I0 per-cell
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "experiments/run-pacz-main-i0-20260604.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pacz-main-i0-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reproduce_cell:
+    name: ${{ matrix.cell_id }}
+    runs-on: self-hosted
+    timeout-minutes: 355
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - cell_id: sst2_1p3b_lora_paczpl_s1
+            script: scripts/headline/sst2_1p3b_lora_paczpl_s1.sh
+          - cell_id: sst2_1p3b_lora_paczpl_s2
+            script: scripts/headline/sst2_1p3b_lora_paczpl_s2.sh
+          - cell_id: sst2_1p3b_lora_paczpl_s3
+            script: scripts/headline/sst2_1p3b_lora_paczpl_s3.sh
+          - cell_id: sst2_1p3b_ft_paczpl_s0
+            script: scripts/headline/sst2_1p3b_ft_paczpl_s0.sh
+          - cell_id: sst2_1p3b_ft_paczpl_s1
+            script: scripts/headline/sst2_1p3b_ft_paczpl_s1.sh
+          - cell_id: sst2_1p3b_ft_paczpl_s2
+            script: scripts/headline/sst2_1p3b_ft_paczpl_s2.sh
+          - cell_id: squad_1p3b_lora_paczpl_s0
+            script: scripts/headline/squad_1p3b_lora_paczpl_s0.sh
+          - cell_id: squad_1p3b_ft_paczpl_s0
+            script: scripts/headline/squad_1p3b_ft_paczpl_s0.sh
+          - cell_id: squad_1p3b_ft_paczpl_s1
+            script: scripts/headline/squad_1p3b_ft_paczpl_s1.sh
+          - cell_id: squad_1p3b_ft_paczpl_s2
+            script: scripts/headline/squad_1p3b_ft_paczpl_s2.sh
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Run one PACZero cell
+        shell: bash
+        env:
+          CELL_ID: ${{ matrix.cell_id }}
+          CELL_SCRIPT: ${{ matrix.script }}
+          LOG_SUBDIR: logs/pacz-main-i0
+        run: |
+          set -u
+
+          ROOT_DIR="${PWD}"
+          CELL_LOG_DIR="${ROOT_DIR}/${LOG_SUBDIR}/${CELL_ID}"
+          LOG_FILE="${CELL_LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          LATEST_LOG="${CELL_LOG_DIR}/latest.log"
+          METRICS_JSON="${CELL_LOG_DIR}/metrics.json"
+          STATUS_JSON="${CELL_LOG_DIR}/status.json"
+          WORK_PARENT="${ROOT_DIR}/_work/${CELL_ID}"
+          WORK_DIR="${WORK_PARENT}/paczero"
+          mkdir -p "${CELL_LOG_DIR}" "${WORK_PARENT}"
+
+          run_status=0
+
+          {
+            echo "PACZero main I=0 / PAC-ZPL cell reproduction"
+            echo "================================================"
+            echo "Cell ID: ${CELL_ID}"
+            echo "Script: ${CELL_SCRIPT}"
+            echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${GITHUB_REF}"
+            echo "SHA: ${GITHUB_SHA}"
+            echo "Run ID: ${GITHUB_RUN_ID}"
+            echo "Run attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo
+
+            echo "--- System ---"
+            uname -a
+            echo
+
+            echo "--- NVIDIA ---"
+            command -v nvidia-smi || true
+            nvidia-smi || true
+            echo
+
+            echo "--- Python ---"
+            python --version
+            python -m pip --version
+            echo
+
+            echo "--- Clone PACZero ---"
+            rm -rf "${WORK_DIR}"
+            if ! git clone --depth 1 https://github.com/bilgehanertan/paczero.git "${WORK_DIR}"; then
+              echo "FAILED: git clone PACZero"
+              run_status=10
+            else
+              cd "${WORK_DIR}"
+              PACZERO_SHA="$(git rev-parse HEAD)"
+              echo "PACZero SHA: ${PACZERO_SHA}"
+              echo
+
+              echo "--- Install dependencies ---"
+              if ! python -m pip install --upgrade pip; then
+                echo "FAILED: pip upgrade"
+                run_status=11
+              elif ! python -m pip install -r requirements.txt; then
+                echo "FAILED: requirements install"
+                run_status=12
+              else
+                echo
+                echo "--- Run cell with portable timeout ---"
+                echo "Command: timeout --signal=TERM --kill-after=60s 330m bash ${CELL_SCRIPT}"
+                timeout --signal=TERM --kill-after=60s 330m bash "${CELL_SCRIPT}"
+                run_status=$?
+
+                if [ "${run_status}" -eq 124 ]; then
+                  echo "CELL TIMEOUT: ${CELL_ID} exceeded 330m. Logs will be committed and remaining cells can continue."
+                elif [ "${run_status}" -eq 0 ]; then
+                  echo "CELL SUCCESS: ${CELL_ID}"
+                else
+                  echo "CELL FAILED: ${CELL_ID} exit code ${run_status}"
+                fi
+
+                echo
+                echo "--- Collect cell metrics ---"
+                python - <<'PY'
+          import glob, json, os
+
+          cell_id = os.environ["CELL_ID"]
+          out_path = os.environ["METRICS_JSON"]
+          rows = []
+          for path in sorted(glob.glob("result/runs/*/metrics.json")):
+              run_id = os.path.basename(os.path.dirname(path))
+              with open(path, "r", encoding="utf-8") as f:
+                  metrics = json.load(f)
+              rows.append({"cell_id": cell_id, "run_id": run_id, "metrics_path": path, "metrics": metrics})
+          payload = {"cell_id": cell_id, "results": rows}
+          with open(out_path, "w", encoding="utf-8") as f:
+              json.dump(payload, f, indent=2, sort_keys=True)
+          print(json.dumps(payload, sort_keys=True))
+          PY
+                cat "${METRICS_JSON}" || true
+              fi
+            fi
+
+            cd "${ROOT_DIR}"
+            cat > "${STATUS_JSON}" <<JSON
+          {
+            "cell_id": "${CELL_ID}",
+            "script": "${CELL_SCRIPT}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "head_sha": "${GITHUB_SHA}",
+            "exit_code": ${run_status},
+            "completed_utc": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          }
+          JSON
+            echo
+            echo "--- Cell status ---"
+            cat "${STATUS_JSON}"
+          } 2>&1 | tee "${LOG_FILE}"
+
+          cd "${ROOT_DIR}"
+          cp "${LOG_FILE}" "${LATEST_LOG}"
+
+          {
+            echo
+            echo "--- Commit cell logs ---"
+            git status --short
+          } | tee -a "${LOG_FILE}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf "${WORK_PARENT}"
+
+          git pull --rebase origin main 2>&1 | tee -a "${LOG_FILE}"
+          pull_status=${PIPESTATUS[0]}
+          if [ "${pull_status}" -eq 0 ]; then
+            git add "${LOG_SUBDIR}/${CELL_ID}"
+            if git diff --cached --quiet; then
+              echo "No cell log changes to commit." | tee -a "${LOG_FILE}"
+              push_status=0
+            else
+              git commit -m "Add PACZero main I0 cell logs for ${CELL_ID} run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+              git push 2>&1 | tee -a "${LOG_FILE}"
+              push_status=${PIPESTATUS[0]}
+            fi
+          else
+            echo "Git pull --rebase exit code: ${pull_status}" | tee -a "${LOG_FILE}"
+            push_status="${pull_status}"
+          fi
+
+          echo "Cell log: ${LOG_SUBDIR}/${CELL_ID}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log" | tee -a "${LOG_FILE}"
+          echo "Latest cell log: ${LOG_SUBDIR}/${CELL_ID}/latest.log" | tee -a "${LOG_FILE}"
+          echo "Metrics: ${LOG_SUBDIR}/${CELL_ID}/metrics.json" | tee -a "${LOG_FILE}"
+          echo "Status: ${LOG_SUBDIR}/${CELL_ID}/status.json" | tee -a "${LOG_FILE}"
+          echo "Git push exit code: ${push_status}" | tee -a "${LOG_FILE}"
+          echo "Cell exit code: ${run_status}" | tee -a "${LOG_FILE}"
+
+          if [ "${push_status}" -ne 0 ]; then
+            exit "${push_status}"
+          fi
+          exit "${run_status}"
+
+  aggregate:
+    name: Aggregate PACZero main cell statuses
+    runs-on: ubuntu-latest
+    needs: reproduce_cell
+    if: always()
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Build aggregate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG_SUBDIR="logs/pacz-main-i0"
+          mkdir -p "${LOG_SUBDIR}/summary"
+          python - <<'PY'
+          import glob, json, os
+
+          root = "logs/pacz-main-i0"
+          statuses = []
+          metrics = []
+          for path in sorted(glob.glob(os.path.join(root, "*", "status.json"))):
+              with open(path, "r", encoding="utf-8") as f:
+                  row = json.load(f)
+              row["status_path"] = path
+              statuses.append(row)
+          for path in sorted(glob.glob(os.path.join(root, "*", "metrics.json"))):
+              with open(path, "r", encoding="utf-8") as f:
+                  row = json.load(f)
+              row["metrics_file"] = path
+              metrics.append(row)
+          payload = {
+              "workflow": "PACZero main I0 per-cell",
+              "completed_utc": os.popen("date -u +'%Y-%m-%dT%H:%M:%SZ'").read().strip(),
+              "statuses": statuses,
+              "metrics": metrics,
+          }
+          out = os.path.join(root, "summary", "latest.json")
+          with open(out, "w", encoding="utf-8") as f:
+              json.dump(payload, f, indent=2, sort_keys=True)
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit aggregate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
+          git add logs/pacz-main-i0/summary
+          if git diff --cached --quiet; then
+            echo "No aggregate summary changes to commit."
+          else
+            git commit -m "Add PACZero main I0 aggregate summary"
+            git push
+          fi
