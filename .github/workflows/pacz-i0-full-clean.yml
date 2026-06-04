@@ -5,20 +5,46 @@ on:
     branches:
       - experiment/pacz-i0-full-clean-20260603
     paths:
-      - "experiments/run-pacz-i0-full-clean-20260603.md"
+      - "experiments/run-pacz-i0-full-clean-v2-20260603.md"
 
 permissions:
   contents: write
 
 concurrency:
-  group: pacz-i0-full-clean-${{ github.ref }}
+  group: pacz-i0-full-clean-v2-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  reproduce:
-    name: Reproduce PACZero 1.3B I0 claims
+  reproduce_cell:
+    name: ${{ matrix.cell_id }}
     runs-on: self-hosted
-    timeout-minutes: 480
+    timeout-minutes: 355
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - cell_id: sst2_1p3b_lora_paczpl_s1
+            script: scripts/headline/sst2_1p3b_lora_paczpl_s1.sh
+          - cell_id: sst2_1p3b_lora_paczpl_s2
+            script: scripts/headline/sst2_1p3b_lora_paczpl_s2.sh
+          - cell_id: sst2_1p3b_lora_paczpl_s3
+            script: scripts/headline/sst2_1p3b_lora_paczpl_s3.sh
+          - cell_id: sst2_1p3b_ft_paczpl_s0
+            script: scripts/headline/sst2_1p3b_ft_paczpl_s0.sh
+          - cell_id: sst2_1p3b_ft_paczpl_s1
+            script: scripts/headline/sst2_1p3b_ft_paczpl_s1.sh
+          - cell_id: sst2_1p3b_ft_paczpl_s2
+            script: scripts/headline/sst2_1p3b_ft_paczpl_s2.sh
+          - cell_id: squad_1p3b_lora_paczpl_s0
+            script: scripts/headline/squad_1p3b_lora_paczpl_s0.sh
+          - cell_id: squad_1p3b_ft_paczpl_s0
+            script: scripts/headline/squad_1p3b_ft_paczpl_s0.sh
+          - cell_id: squad_1p3b_ft_paczpl_s1
+            script: scripts/headline/squad_1p3b_ft_paczpl_s1.sh
+          - cell_id: squad_1p3b_ft_paczpl_s2
+            script: scripts/headline/squad_1p3b_ft_paczpl_s2.sh
 
     steps:
       - name: Check out branch
@@ -31,28 +57,32 @@ jobs:
         with:
           python-version: "3.9"
 
-      - name: Run reproduction and always commit logs
+      - name: Run one PACZero paper cell and always commit logs
         shell: bash
         env:
-          LOG_SUBDIR: logs/pacz-i0-full-clean
+          CELL_ID: ${{ matrix.cell_id }}
+          CELL_SCRIPT: ${{ matrix.script }}
+          LOG_SUBDIR: logs/pacz-i0-full-clean-v2
         run: |
           set -u
 
           ROOT_DIR="${PWD}"
-          LOG_DIR="${ROOT_DIR}/${LOG_SUBDIR}"
-          LOG_FILE="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          LATEST_LOG="${LOG_DIR}/latest.log"
-          METRICS_JSONL="${LOG_DIR}/metrics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl"
-          LATEST_METRICS="${LOG_DIR}/latest-metrics.jsonl"
-          WORK_PARENT="${ROOT_DIR}/_work"
+          CELL_LOG_DIR="${ROOT_DIR}/${LOG_SUBDIR}/${CELL_ID}"
+          LOG_FILE="${CELL_LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          LATEST_LOG="${CELL_LOG_DIR}/latest.log"
+          METRICS_JSON="${CELL_LOG_DIR}/metrics.json"
+          STATUS_JSON="${CELL_LOG_DIR}/status.json"
+          WORK_PARENT="${ROOT_DIR}/_work/${CELL_ID}"
           WORK_DIR="${WORK_PARENT}/paczero"
-          mkdir -p "${LOG_DIR}" "${WORK_PARENT}"
+          mkdir -p "${CELL_LOG_DIR}" "${WORK_PARENT}"
 
           run_status=0
 
           {
-            echo "PACZero 1.3B I=0 / PAC-ZPL full reproduction"
-            echo "==============================================="
+            echo "PACZero 1.3B I=0 / PAC-ZPL cell reproduction"
+            echo "================================================"
+            echo "Cell ID: ${CELL_ID}"
+            echo "Script: ${CELL_SCRIPT}"
             echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Repository: ${GITHUB_REPOSITORY}"
             echo "Ref: ${GITHUB_REF}"
@@ -98,78 +128,64 @@ jobs:
                 run_status=12
               else
                 echo
-                echo "--- Script set: OPT-1.3B PAC-ZPL / I=0 Table 1 cells ---"
-                scripts=(
-                  scripts/headline/sst2_1p3b_lora_paczpl_s1.sh
-                  scripts/headline/sst2_1p3b_lora_paczpl_s2.sh
-                  scripts/headline/sst2_1p3b_lora_paczpl_s3.sh
-                  scripts/headline/sst2_1p3b_ft_paczpl_s0.sh
-                  scripts/headline/sst2_1p3b_ft_paczpl_s1.sh
-                  scripts/headline/sst2_1p3b_ft_paczpl_s2.sh
-                  scripts/headline/squad_1p3b_lora_paczpl_s0.sh
-                  scripts/headline/squad_1p3b_ft_paczpl_s0.sh
-                  scripts/headline/squad_1p3b_ft_paczpl_s1.sh
-                  scripts/headline/squad_1p3b_ft_paczpl_s2.sh
-                )
-                printf '%s\n' "${scripts[@]}"
+                echo "--- Run cell with graceful timeout before platform cancellation ---"
+                echo "Command: timeout --signal=TERM --kill-after=60s 5h30m bash ${CELL_SCRIPT}"
+                timeout --signal=TERM --kill-after=60s 5h30m bash "${CELL_SCRIPT}"
+                run_status=$?
+                if [ "${run_status}" -eq 124 ]; then
+                  echo "CELL TIMEOUT: ${CELL_ID} exceeded 5h30m. Logs will be committed and remaining matrix cells will continue."
+                elif [ "${run_status}" -eq 0 ]; then
+                  echo "CELL SUCCESS: ${CELL_ID}"
+                else
+                  echo "CELL FAILED: ${CELL_ID} exit code ${run_status}"
+                fi
+
                 echo
-
-                for script in "${scripts[@]}"; do
-                  echo "============================================================"
-                  echo "START ${script}"
-                  echo "UTC start: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-                  echo "============================================================"
-                  if bash "${script}"; then
-                    status=0
-                  else
-                    status=$?
-                  fi
-                  echo "UTC end: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-                  echo "EXIT ${script}: ${status}"
-                  echo
-                  if [ "${status}" -ne 0 ]; then
-                    run_status="${status}"
-                    break
-                  fi
-                done
-
-                echo "--- Collect metrics ---"
-                : > "${METRICS_JSONL}"
+                echo "--- Collect cell metrics ---"
                 python - <<'PY'
-          import glob, json, os
+          import glob, json, os, shutil
 
-          out_path = os.environ["METRICS_JSONL"]
+          cell_id = os.environ["CELL_ID"]
+          out_path = os.environ["METRICS_JSON"]
           paths = sorted(glob.glob("result/runs/*/metrics.json"))
           rows = []
           for path in paths:
               run_id = os.path.basename(os.path.dirname(path))
               with open(path, "r", encoding="utf-8") as f:
                   metrics = json.load(f)
-              rows.append({"run_id": run_id, "metrics_path": path, "metrics": metrics})
+              rows.append({"cell_id": cell_id, "run_id": run_id, "metrics_path": path, "metrics": metrics})
+          payload = {"cell_id": cell_id, "results": rows}
           with open(out_path, "w", encoding="utf-8") as f:
-              for row in rows:
-                  f.write(json.dumps(row, sort_keys=True) + "\n")
-          for row in rows:
-              print(json.dumps(row, sort_keys=True))
+              json.dump(payload, f, indent=2, sort_keys=True)
+          print(json.dumps(payload, sort_keys=True))
           PY
-                cat "${METRICS_JSONL}" || true
+                cat "${METRICS_JSON}" || true
               fi
             fi
 
+            cd "${ROOT_DIR}"
+            cat > "${STATUS_JSON}" <<JSON
+          {
+            "cell_id": "${CELL_ID}",
+            "script": "${CELL_SCRIPT}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "head_sha": "${GITHUB_SHA}",
+            "exit_code": ${run_status},
+            "completed_utc": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          }
+          JSON
             echo
-            echo "--- Reproduction status ---"
-            echo "run_status=${run_status}"
+            echo "--- Cell status ---"
+            cat "${STATUS_JSON}"
           } 2>&1 | tee "${LOG_FILE}"
 
           cd "${ROOT_DIR}"
           cp "${LOG_FILE}" "${LATEST_LOG}"
-          if [ -f "${METRICS_JSONL}" ]; then
-            cp "${METRICS_JSONL}" "${LATEST_METRICS}"
-          fi
 
           {
             echo
-            echo "--- Commit logs ---"
+            echo "--- Commit cell logs ---"
             git status --short
           } | tee -a "${LOG_FILE}"
 
@@ -180,12 +196,12 @@ jobs:
           git pull --rebase origin "${GITHUB_REF_NAME}" 2>&1 | tee -a "${LOG_FILE}"
           pull_status=${PIPESTATUS[0]}
           if [ "${pull_status}" -eq 0 ]; then
-            git add "${LOG_SUBDIR}"
+            git add "${LOG_SUBDIR}/${CELL_ID}"
             if git diff --cached --quiet; then
-              echo "No log changes to commit." | tee -a "${LOG_FILE}"
+              echo "No cell log changes to commit." | tee -a "${LOG_FILE}"
               push_status=0
             else
-              git commit -m "Add clean PACZero I0 full reproduction logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+              git commit -m "Add PACZero I0 cell logs for ${CELL_ID} run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
               git push 2>&1 | tee -a "${LOG_FILE}"
               push_status=${PIPESTATUS[0]}
             fi
@@ -194,13 +210,77 @@ jobs:
             push_status="${pull_status}"
           fi
 
-          echo "Log file: ${LOG_SUBDIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log" | tee -a "${LOG_FILE}"
-          echo "Latest log: ${LOG_SUBDIR}/latest.log" | tee -a "${LOG_FILE}"
-          echo "Metrics JSONL: ${LOG_SUBDIR}/metrics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.jsonl" | tee -a "${LOG_FILE}"
+          echo "Cell log: ${LOG_SUBDIR}/${CELL_ID}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log" | tee -a "${LOG_FILE}"
+          echo "Latest cell log: ${LOG_SUBDIR}/${CELL_ID}/latest.log" | tee -a "${LOG_FILE}"
+          echo "Metrics: ${LOG_SUBDIR}/${CELL_ID}/metrics.json" | tee -a "${LOG_FILE}"
+          echo "Status: ${LOG_SUBDIR}/${CELL_ID}/status.json" | tee -a "${LOG_FILE}"
           echo "Git push exit code: ${push_status}" | tee -a "${LOG_FILE}"
-          echo "Workflow exit code: ${run_status}" | tee -a "${LOG_FILE}"
+          echo "Cell exit code: ${run_status}" | tee -a "${LOG_FILE}"
 
           if [ "${push_status}" -ne 0 ]; then
             exit "${push_status}"
           fi
           exit "${run_status}"
+
+  aggregate:
+    name: Aggregate PACZero cell statuses
+    runs-on: ubuntu-latest
+    needs: reproduce_cell
+    if: always()
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/pacz-i0-full-clean-20260603
+          persist-credentials: true
+
+      - name: Build aggregate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG_SUBDIR="logs/pacz-i0-full-clean-v2"
+          mkdir -p "${LOG_SUBDIR}/summary"
+          SUMMARY="${LOG_SUBDIR}/summary/latest.json"
+          python - <<'PY'
+          import glob, json, os
+
+          root = "logs/pacz-i0-full-clean-v2"
+          statuses = []
+          metrics = []
+          for path in sorted(glob.glob(os.path.join(root, "*", "status.json"))):
+              with open(path, "r", encoding="utf-8") as f:
+                  row = json.load(f)
+              row["status_path"] = path
+              statuses.append(row)
+          for path in sorted(glob.glob(os.path.join(root, "*", "metrics.json"))):
+              with open(path, "r", encoding="utf-8") as f:
+                  row = json.load(f)
+              row["metrics_file"] = path
+              metrics.append(row)
+          payload = {
+              "workflow": "PACZero 1.3B I0 full clean v2",
+              "completed_utc": os.popen("date -u +'%Y-%m-%dT%H:%M:%SZ'").read().strip(),
+              "statuses": statuses,
+              "metrics": metrics,
+          }
+          out = os.path.join(root, "summary", "latest.json")
+          with open(out, "w", encoding="utf-8") as f:
+              json.dump(payload, f, indent=2, sort_keys=True)
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit aggregate summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin experiment/pacz-i0-full-clean-20260603
+          git add logs/pacz-i0-full-clean-v2/summary
+          if git diff --cached --quiet; then
+            echo "No aggregate summary changes to commit."
+          else
+            git commit -m "Add PACZero I0 aggregate summary"
+            git push
+          fi
