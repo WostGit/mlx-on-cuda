@@ -5,13 +5,13 @@ on:
     branches:
       - experiment/pacz-i0-full-clean-20260603
     paths:
-      - "experiments/run-pacz-i0-full-clean-v2-20260603.md"
+      - "experiments/run-pacz-i0-full-clean-v4-20260604.md"
 
 permissions:
   contents: write
 
 concurrency:
-  group: pacz-i0-full-clean-v2-${{ github.ref }}
+  group: pacz-i0-full-clean-v4-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -62,7 +62,7 @@ jobs:
         env:
           CELL_ID: ${{ matrix.cell_id }}
           CELL_SCRIPT: ${{ matrix.script }}
-          LOG_SUBDIR: logs/pacz-i0-full-clean-v2
+          LOG_SUBDIR: logs/pacz-i0-full-clean-v4
         run: |
           set -u
 
@@ -143,7 +143,7 @@ jobs:
                 echo
                 echo "--- Collect cell metrics ---"
                 python - <<'PY'
-          import glob, json, os, shutil
+          import glob, json, os
 
           cell_id = os.environ["CELL_ID"]
           out_path = os.environ["METRICS_JSON"]
@@ -239,13 +239,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LOG_SUBDIR="logs/pacz-i0-full-clean-v2"
+          LOG_SUBDIR="logs/pacz-i0-full-clean-v4"
           mkdir -p "${LOG_SUBDIR}/summary"
           SUMMARY="${LOG_SUBDIR}/summary/latest.json"
           python - <<'PY'
           import glob, json, os
 
-          root = "logs/pacz-i0-full-clean-v2"
+          root = "logs/pacz-i0-full-clean-v4"
           statuses = []
           metrics = []
           for path in sorted(glob.glob(os.path.join(root, "*", "status.json"))):
@@ -259,7 +259,7 @@ jobs:
               row["metrics_file"] = path
               metrics.append(row)
           payload = {
-              "workflow": "PACZero 1.3B I0 full clean v2",
+              "workflow": "PACZero 1.3B I0 full clean v4",
               "completed_utc": os.popen("date -u +'%Y-%m-%dT%H:%M:%SZ'").read().strip(),
               "statuses": statuses,
               "metrics": metrics,
@@ -277,10 +277,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin experiment/pacz-i0-full-clean-20260603
-          git add logs/pacz-i0-full-clean-v2/summary
+          git add logs/pacz-i0-full-clean-v4/summary
           if git diff --cached --quiet; then
             echo "No aggregate summary changes to commit."
           else
-            git commit -m "Add PACZero I0 aggregate summary"
+            git commit -m "Add PACZero I0 v4 aggregate summary"
             git push
           fi
