@@ -4,6 +4,7 @@ on:
   push:
     paths-ignore:
       - "logs/mlx-cuda-smoke/**"
+      - "experiments/run-pacz-main-i0-20260604.md"
   pull_request:
   workflow_dispatch:
 
