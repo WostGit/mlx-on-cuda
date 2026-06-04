@@ -5,13 +5,13 @@ on:
     branches:
       - experiment/pacz-i0-full-clean-20260603
     paths:
-      - "experiments/run-pacz-i0-full-clean-v4-20260604.md"
+      - "experiments/run-pacz-i0-full-clean-v5-20260604.md"
 
 permissions:
   contents: write
 
 concurrency:
-  group: pacz-i0-full-clean-v4-${{ github.ref }}
+  group: pacz-i0-full-clean-v5-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -62,7 +62,7 @@ jobs:
         env:
           CELL_ID: ${{ matrix.cell_id }}
           CELL_SCRIPT: ${{ matrix.script }}
-          LOG_SUBDIR: logs/pacz-i0-full-clean-v4
+          LOG_SUBDIR: logs/pacz-i0-full-clean-v5
         run: |
           set -u
 
@@ -129,11 +129,11 @@ jobs:
               else
                 echo
                 echo "--- Run cell with graceful timeout before platform cancellation ---"
-                echo "Command: timeout --signal=TERM --kill-after=60s 5h30m bash ${CELL_SCRIPT}"
-                timeout --signal=TERM --kill-after=60s 5h30m bash "${CELL_SCRIPT}"
+                echo "Command: timeout --signal=TERM --kill-after=60s 330m bash ${CELL_SCRIPT}"
+                timeout --signal=TERM --kill-after=60s 330m bash "${CELL_SCRIPT}"
                 run_status=$?
                 if [ "${run_status}" -eq 124 ]; then
-                  echo "CELL TIMEOUT: ${CELL_ID} exceeded 5h30m. Logs will be committed and remaining matrix cells will continue."
+                  echo "CELL TIMEOUT: ${CELL_ID} exceeded 330m. Logs will be committed and remaining matrix cells will continue."
                 elif [ "${run_status}" -eq 0 ]; then
                   echo "CELL SUCCESS: ${CELL_ID}"
                 else
@@ -239,13 +239,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LOG_SUBDIR="logs/pacz-i0-full-clean-v4"
+          LOG_SUBDIR="logs/pacz-i0-full-clean-v5"
           mkdir -p "${LOG_SUBDIR}/summary"
-          SUMMARY="${LOG_SUBDIR}/summary/latest.json"
           python - <<'PY'
           import glob, json, os
 
-          root = "logs/pacz-i0-full-clean-v4"
+          root = "logs/pacz-i0-full-clean-v5"
           statuses = []
           metrics = []
           for path in sorted(glob.glob(os.path.join(root, "*", "status.json"))):
@@ -259,7 +258,7 @@ jobs:
               row["metrics_file"] = path
               metrics.append(row)
           payload = {
-              "workflow": "PACZero 1.3B I0 full clean v4",
+              "workflow": "PACZero 1.3B I0 full clean v5",
               "completed_utc": os.popen("date -u +'%Y-%m-%dT%H:%M:%SZ'").read().strip(),
               "statuses": statuses,
               "metrics": metrics,
@@ -277,10 +276,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin experiment/pacz-i0-full-clean-20260603
-          git add logs/pacz-i0-full-clean-v4/summary
+          git add logs/pacz-i0-full-clean-v5/summary
           if git diff --cached --quiet; then
             echo "No aggregate summary changes to commit."
           else
-            git commit -m "Add PACZero I0 v4 aggregate summary"
+            git commit -m "Add PACZero I0 v5 aggregate summary"
             git push
           fi
