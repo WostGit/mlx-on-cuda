@@ -6,7 +6,7 @@ on:
 jobs:
   native-vulkan:
     name: Native Vulkan llama.cpp
-    runs-on: [self-hosted, native-vulkan]
+    runs-on: [self-hosted]
 
     steps:
       - uses: actions/checkout@v4
