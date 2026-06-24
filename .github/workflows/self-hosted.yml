@@ -54,7 +54,9 @@ jobs:
             python3 -c "import mlx.core as mx; print('MLX OK', mx.default_device())" || true
             echo
             echo "## SYCL"
+            set +u
             source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+            set -u
             which icpx || true
             icpx --version || true
             which sycl-ls || true
@@ -83,7 +85,9 @@ jobs:
             MLX_AVAILABLE=1
           fi
 
+          set +u
           source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+          set -u
           if command -v icpx >/dev/null 2>&1; then
             SYCL_AVAILABLE=1
           fi
@@ -95,13 +99,12 @@ jobs:
             echo "SYCL_AVAILABLE=$SYCL_AVAILABLE"
           } | tee results/backend_availability.env
 
-      - name: Install common dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           set -euxo pipefail
-
           sudo apt-get update -y || true
-          sudo apt-get install -y git cmake build-essential ninja-build python3-pip libvulkan-dev vulkan-tools glslang-tools spirv-tools || true
+          sudo apt-get install -y git cmake build-essential ninja-build python3-pip libvulkan-dev vulkan-tools glslang-tools spirv-tools curl tar xz-utils || true
           python3 -m pip install --user "huggingface_hub<1.0" || true
 
       - name: Install Vulkan SDK glslc if missing
@@ -151,14 +154,14 @@ jobs:
           sha256sum models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/model_sha256.txt
           ls -lh models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/model_file.txt
 
-      - name: Start CUDA GPU telemetry
+      - name: Start GPU telemetry
         shell: bash
         continue-on-error: true
         run: |
           set -euxo pipefail
 
           if ! command -v nvidia-smi >/dev/null 2>&1; then
-            echo "No nvidia-smi; telemetry skipped" | tee results/telemetry_skipped.txt
+            echo "Telemetry skipped: nvidia-smi missing" | tee results/telemetry_skipped.txt
             exit 0
           fi
 
@@ -173,7 +176,7 @@ jobs:
 
           echo $! > results/gpu_telemetry.pid
 
-      - name: Build CUDA llama.cpp backend
+      - name: Build CUDA backend
         shell: bash
         continue-on-error: true
         run: |
@@ -199,7 +202,7 @@ jobs:
           cmake --build build-cuda --target llama-bench -j4 \
             2>&1 | tee ../results/cuda_build.log
 
-      - name: Build Vulkan llama.cpp backend
+      - name: Build Vulkan backend
         shell: bash
         continue-on-error: true
         run: |
@@ -207,7 +210,7 @@ jobs:
           source results/backend_availability.env
 
           if [ "$VULKAN_AVAILABLE" != "1" ]; then
-            echo "Vulkan skipped: no NVIDIA or D3D12 Vulkan device visible" | tee results/vulkan_skipped.txt
+            echo "Vulkan skipped: no NVIDIA/D3D12 Vulkan device visible" | tee results/vulkan_skipped.txt
             exit 0
           fi
 
@@ -230,7 +233,7 @@ jobs:
           cmake --build build-vulkan --target llama-bench -j4 \
             2>&1 | tee ../results/vulkan_build.log
 
-      - name: Build SYCL llama.cpp backend
+      - name: Build SYCL backend
         shell: bash
         continue-on-error: true
         run: |
@@ -242,7 +245,9 @@ jobs:
             exit 0
           fi
 
-          source /opt/intel/oneapi/setvars.sh >/dev/null
+          set +u
+          source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+          set -u
 
           cd llama.cpp
 
@@ -259,7 +264,7 @@ jobs:
           cmake --build build-sycl --target llama-bench -j4 \
             2>&1 | tee ../results/sycl_build.log
 
-      - name: Run CUDA end-to-end and component proxies
+      - name: Run CUDA component and full inference
         shell: bash
         continue-on-error: true
         run: |
@@ -278,7 +283,7 @@ jobs:
           ./build-cuda/bin/llama-bench -m "$MODEL" -p 512 -n 512 -ngl 99 -o json | tee ../results/cuda_component_balanced_proxy.json
           ./build-cuda/bin/llama-bench -m "$MODEL" -p 2048 -n 256 -ngl 99 -o json | tee ../results/cuda_full_system.json
 
-      - name: Run Vulkan end-to-end
+      - name: Run Vulkan full inference
         shell: bash
         continue-on-error: true
         run: |
@@ -293,16 +298,17 @@ jobs:
           fi
 
           vulkaninfo --summary | tee ../results/vulkan_runtime_device.txt || true
-
           ./build-vulkan/bin/llama-bench -m "$MODEL" -p 2048 -n 256 -ngl 99 -o json | tee ../results/vulkan_full_system.json
 
-      - name: Run SYCL end-to-end
+      - name: Run SYCL full inference
         shell: bash
         continue-on-error: true
         run: |
           set -euxo pipefail
 
-          source /opt/intel/oneapi/setvars.sh >/dev/null || true
+          set +u
+          source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+          set -u
 
           cd llama.cpp
           MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
@@ -313,19 +319,16 @@ jobs:
           fi
 
           sycl-ls | tee ../results/sycl_runtime_devices.txt || true
-
           ./build-sycl/bin/llama-bench -m "$MODEL" -p 2048 -n 256 -ngl 99 -o json | tee ../results/sycl_full_system.json
 
-      - name: Run MLX component-level smoke
+      - name: Run MLX component benchmark
         shell: bash
         continue-on-error: true
         run: |
           set -euxo pipefail
 
           cat > smoke/mlx_component_demo.py <<'PY'
-          import json
-          import platform
-          import time
+          import json, platform, time
           import mlx.core as mx
 
           def bench(name, fn, warmup=3, iters=10):
@@ -373,13 +376,15 @@ jobs:
 
           python3 smoke/mlx_component_demo.py | tee results/mlx_component_demo.json
 
-      - name: Run SYCL component-level smoke
+      - name: Run SYCL component benchmark
         shell: bash
         continue-on-error: true
         run: |
           set -euxo pipefail
 
-          source /opt/intel/oneapi/setvars.sh >/dev/null || true
+          set +u
+          source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+          set -u
 
           if ! command -v icpx >/dev/null 2>&1; then
             echo "SYCL component skipped: icpx missing" | tee results/sycl_component_skipped.txt
@@ -404,12 +409,9 @@ jobs:
           int main() {
               queue q{default_selector_v};
               auto d = q.get_device();
-
               constexpr int N = 512;
               constexpr int ITERS = 5;
-
               std::vector<float> A(N*N, 1.0f), B(N*N, 1.0f), C(N*N, 0.0f), x(N, 1.0f), y(N, 0.0f);
-
               buffer<float, 2> a(A.data(), range<2>(N, N));
               buffer<float, 2> b(B.data(), range<2>(N, N));
               buffer<float, 2> c(C.data(), range<2>(N, N));
@@ -464,11 +466,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           if [ -f results/gpu_telemetry.pid ]; then
             kill "$(cat results/gpu_telemetry.pid)" || true
           fi
-
           head -5 results/gpu_telemetry_raw.csv || true
           tail -5 results/gpu_telemetry_raw.csv || true
 
@@ -479,8 +479,7 @@ jobs:
           set -euxo pipefail
 
           cat > smoke/report.py <<'PY'
-          import json
-          import csv
+          import json, csv
           from pathlib import Path
 
           base = Path("results")
@@ -503,20 +502,18 @@ jobs:
               if not path.exists():
                   return None
               text = path.read_text(errors="replace").strip()
-              start = min([i for i in [text.find("["), text.find("{")] if i >= 0], default=-1)
-              if start > 0:
-                  text = text[start:]
+              starts = [i for i in [text.find("["), text.find("{")] if i >= 0]
+              if starts:
+                  text = text[min(starts):]
               try:
                   return json.loads(text)
-              except Exception as e:
-                  return {"parse_error": str(e), "raw_tail": text[-1000:]}
+              except Exception:
+                  return None
 
           def rows_from(data):
               if data is None:
                   return []
               return data if isinstance(data, list) else [data]
-
-          rows = []
 
           def phase(r):
               p = int(r.get("n_prompt", 0) or 0)
@@ -529,37 +526,37 @@ jobs:
                   return "mixed"
               return "component"
 
+          rows = []
+
           for exp, fname in llama_files.items():
               for r in rows_from(load_json(base / fname)):
-                  if not isinstance(r, dict) or "parse_error" in r:
-                      continue
-                  rows.append({
-                      "experiment": exp,
-                      "backend": r.get("backends"),
-                      "phase": phase(r),
-                      "n_prompt": r.get("n_prompt"),
-                      "n_gen": r.get("n_gen"),
-                      "tokens_per_second": r.get("avg_ts"),
-                      "stddev_tokens_per_second": r.get("stddev_ts"),
-                      "device": r.get("gpu_info") or r.get("cpu_info"),
-                      "metric": "tok/s",
-                  })
+                  if isinstance(r, dict):
+                      rows.append({
+                          "experiment": exp,
+                          "backend": r.get("backends"),
+                          "phase": phase(r),
+                          "n_prompt": r.get("n_prompt"),
+                          "n_gen": r.get("n_gen"),
+                          "tokens_per_second": r.get("avg_ts"),
+                          "stddev_tokens_per_second": r.get("stddev_ts"),
+                          "device": r.get("gpu_info") or r.get("cpu_info"),
+                          "metric": "tok/s",
+                      })
 
           for exp, fname in component_files.items():
               for r in rows_from(load_json(base / fname)):
-                  if not isinstance(r, dict) or "parse_error" in r:
-                      continue
-                  rows.append({
-                      "experiment": r.get("experiment") or exp,
-                      "backend": r.get("backend") or exp,
-                      "phase": "component",
-                      "n_prompt": "",
-                      "n_gen": "",
-                      "tokens_per_second": "",
-                      "stddev_tokens_per_second": "",
-                      "device": r.get("device"),
-                      "metric": f"{r.get('avg_ms')} ms",
-                  })
+                  if isinstance(r, dict):
+                      rows.append({
+                          "experiment": r.get("experiment") or exp,
+                          "backend": r.get("backend") or exp,
+                          "phase": "component",
+                          "n_prompt": "",
+                          "n_gen": "",
+                          "tokens_per_second": "",
+                          "stddev_tokens_per_second": "",
+                          "device": r.get("device"),
+                          "metric": f"{r.get('avg_ms')} ms",
+                      })
 
           if rows:
               with (base / "summary.csv").open("w", newline="") as f:
@@ -568,9 +565,7 @@ jobs:
                   writer.writerows(rows)
 
           telemetry = base / "gpu_telemetry_raw.csv"
-          gpu_util = []
-          power = []
-          mem = []
+          gpu_util, power, mem = [], [], []
           if telemetry.exists():
               for line in telemetry.read_text(errors="replace").splitlines():
                   parts = [x.strip() for x in line.split(",")]
@@ -582,10 +577,8 @@ jobs:
                       except Exception:
                           pass
 
-          def avg(xs):
-              return sum(xs) / len(xs) if xs else None
-          def mx(xs):
-              return max(xs) if xs else None
+          def avg(xs): return sum(xs) / len(xs) if xs else None
+          def mx(xs): return max(xs) if xs else None
           def fmt(x):
               if x is None or x == "":
                   return "n/a"
@@ -596,10 +589,6 @@ jobs:
 
           report = []
           report.append("# Coherent End-to-End Backend Demo Report")
-          report.append("")
-          report.append("## Aim")
-          report.append("")
-          report.append("Demonstrate a thesis-shaped benchmarking workflow: component measurements, end-to-end inference, backend availability, and instrumentation.")
           report.append("")
           report.append("## Backend availability")
           report.append("")
@@ -628,10 +617,9 @@ jobs:
           report.append("## Interpretation")
           report.append("")
           report.append("- CUDA provides the clean native RTX 4080 LLM inference baseline.")
-          report.append("- Vulkan, if present, should be interpreted as Vulkan-Dozen/D3D12 under WSL2 unless native Vulkan is confirmed.")
+          report.append("- Vulkan under WSL2 should be interpreted as Vulkan-Dozen/D3D12 unless native Vulkan is confirmed.")
           report.append("- SYCL currently targets the oneAPI/OpenCL CPU backend unless a GPU SYCL device appears in sycl-ls.")
-          report.append("- MLX is included as a component-level backend unless an MLX-on-CUDA end-to-end model runner exists.")
-          report.append("- Skipped sections are expected and are part of backend readiness reporting, not workflow failure.")
+          report.append("- MLX is component-level here unless an MLX-on-CUDA end-to-end model runner exists.")
           report.append("")
 
           (base / "DEMO_REPORT.md").write_text("\n".join(report))
