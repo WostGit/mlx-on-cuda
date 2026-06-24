@@ -1,4 +1,4 @@
-name: Self-hosted RTX 4080 CUDA vs Vulkan benchmark
+name: Fast component + full-system LLM benchmark
 
 on:
   workflow_dispatch:
@@ -8,66 +8,31 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: System diagnostics
+      - name: Diagnostics
         run: |
           set -euxo pipefail
           mkdir -p results
-
           date | tee results/date.txt
           uname -a | tee results/uname.txt
-          lsb_release -a | tee results/os.txt || true
-
-          echo "=== NVIDIA ===" | tee results/nvidia.txt
-          nvidia-smi | tee -a results/nvidia.txt
+          nvidia-smi | tee results/nvidia.txt
           nvcc --version | tee results/nvcc.txt || true
-
-          echo "=== Vulkan ===" | tee results/vulkaninfo_initial.txt
-          vulkaninfo --summary | tee -a results/vulkaninfo_initial.txt || true
+          vulkaninfo --summary | tee results/vulkaninfo.txt || true
 
       - name: Install dependencies
         run: |
           set -euxo pipefail
-
           sudo apt-get update -y
-
-          sudo apt-get install -y \
-            git \
-            cmake \
-            build-essential \
-            ninja-build \
-            python3-pip \
-            libvulkan-dev \
-            vulkan-tools \
-            glslang-tools \
-            spirv-tools
-
-          sudo apt-get install -y glslc || true
-          sudo apt-get install -y shaderc || true
-
-          echo "=== Tool checks ==="
-          which cmake || true
-          cmake --version || true
-          which ninja || true
-          ninja --version || true
-          which vulkaninfo || true
-          vulkaninfo --summary || true
-          which glslc || true
-          glslc --version || true
-          which glslangValidator || true
-          glslangValidator --version || true
-
+          sudo apt-get install -y git cmake build-essential ninja-build python3-pip libvulkan-dev vulkan-tools glslang-tools spirv-tools
           python3 -m pip install --user "huggingface_hub<1.0"
 
       - name: Clone llama.cpp
         run: |
           set -euxo pipefail
-
           rm -rf llama.cpp
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
-
           cd llama.cpp
           git rev-parse HEAD | tee ../results/llama_commit.txt
           git log -1 --oneline | tee ../results/llama_commit_oneline.txt
@@ -75,13 +40,11 @@ jobs:
       - name: Download model
         run: |
           set -euxo pipefail
-
           cd llama.cpp
-          mkdir -p models results
+          mkdir -p models
 
           python3 - <<'PY'
           from huggingface_hub import hf_hub_download
-
           hf_hub_download(
               repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
               filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
@@ -90,12 +53,10 @@ jobs:
           PY
 
           sha256sum models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/model_sha256.txt
-          ls -lh models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/model_file.txt
 
-      - name: Build CUDA llama-bench
+      - name: Build CUDA llama-bench only
         run: |
           set -euxo pipefail
-
           cd llama.cpp
 
           cmake -B build-cuda -G Ninja \
@@ -106,27 +67,44 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_SERVER=OFF
 
-          cmake --build build-cuda --target llama-bench -j2
-          ls -lh build-cuda/bin/llama-bench | tee ../results/cuda_binary.txt
+          cmake --build build-cuda --target llama-bench -j4
 
-      - name: Build Vulkan llama-bench
+      - name: CUDA component-style benchmarks
         run: |
           set -euxo pipefail
+          cd llama.cpp
+          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
+          echo "Small prompt/decode: proxy for decode-heavy behavior"
+          ./build-cuda/bin/llama-bench -m "$MODEL" -p 128 -n 128 -ngl 99 -o json | tee ../results/cuda_component_decode_proxy.json
+
+          echo "Large prompt/no decode: proxy for prefill/GEMM-heavy behavior"
+          ./build-cuda/bin/llama-bench -m "$MODEL" -p 2048 -n 0 -ngl 99 -o json | tee ../results/cuda_component_prefill_proxy.json
+
+          echo "Longer decode: proxy for KV-cache/decode stability"
+          ./build-cuda/bin/llama-bench -m "$MODEL" -p 512 -n 512 -ngl 99 -o json | tee ../results/cuda_component_kv_proxy.json
+
+      - name: CUDA full-system benchmark
+        run: |
+          set -euxo pipefail
+          cd llama.cpp
+          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+          ./build-cuda/bin/llama-bench \
+            -m "$MODEL" \
+            -p 512 \
+            -n 128 \
+            -ngl 99 \
+            -o json | tee ../results/cuda_full_inference.json
+
+      - name: Try Vulkan build quickly
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
           cd llama.cpp
 
-          echo "=== Vulkan diagnostics before build ===" | tee ../results/vulkan_build_diagnostics.txt
-          which vulkaninfo | tee -a ../results/vulkan_build_diagnostics.txt || true
-          vulkaninfo --summary | tee -a ../results/vulkan_build_diagnostics.txt || true
-
-          echo "=== Shader compiler diagnostics ===" | tee -a ../results/vulkan_build_diagnostics.txt
-          which glslc | tee -a ../results/vulkan_build_diagnostics.txt || true
-          glslc --version | tee -a ../results/vulkan_build_diagnostics.txt || true
-          which glslangValidator | tee -a ../results/vulkan_build_diagnostics.txt || true
-          glslangValidator --version | tee -a ../results/vulkan_build_diagnostics.txt || true
-
           if ! command -v glslc >/dev/null 2>&1; then
-            echo "glslc missing; skipping Vulkan build instead of failing workflow." | tee ../results/vulkan_skipped.txt
+            echo "glslc missing; Vulkan skipped" | tee ../results/vulkan_skipped.txt
             exit 0
           fi
 
@@ -137,64 +115,49 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_SERVER=OFF
 
-          cmake --build build-vulkan --target llama-bench -j2
-          ls -lh build-vulkan/bin/llama-bench | tee ../results/vulkan_binary.txt
+          cmake --build build-vulkan --target llama-bench -j4
 
-      - name: Run CUDA benchmark
+      - name: Run Vulkan if available
+        continue-on-error: true
         run: |
           set -euxo pipefail
-
-          cd llama.cpp
-
-          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-
-          nvidia-smi
-
-          ./build-cuda/bin/llama-bench \
-            -m "$MODEL" \
-            -p 512 \
-            -n 128 \
-            -ngl 99 \
-            -o json | tee ../results/cuda.json
-
-      - name: Run Vulkan benchmark
-        run: |
-          set -euxo pipefail
-
           cd llama.cpp
 
           if [ ! -x build-vulkan/bin/llama-bench ]; then
-            echo "Vulkan binary missing; skipping Vulkan run." | tee ../results/vulkan_run_skipped.txt
+            echo "Vulkan binary missing; skipped" | tee ../results/vulkan_run_skipped.txt
             exit 0
           fi
 
           MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-
-          vulkaninfo --summary | tee ../results/vulkaninfo_run.txt || true
 
           ./build-vulkan/bin/llama-bench \
             -m "$MODEL" \
             -p 512 \
             -n 128 \
             -ngl 99 \
-            -o json | tee ../results/vulkan.json
+            -o json | tee ../results/vulkan_full_inference.json
 
-      - name: Summarize results
+      - name: Summarize
         run: |
           set -euxo pipefail
 
           python3 - <<'PY'
-          import json
-          import csv
+          import json, csv
           from pathlib import Path
 
           base = Path("results")
 
-          def load_rows(name):
-              path = base / f"{name}.json"
+          files = {
+              "cuda_decode_proxy": "cuda_component_decode_proxy.json",
+              "cuda_prefill_proxy": "cuda_component_prefill_proxy.json",
+              "cuda_kv_proxy": "cuda_component_kv_proxy.json",
+              "cuda_full": "cuda_full_inference.json",
+              "vulkan_full": "vulkan_full_inference.json",
+          }
+
+          def load_rows(path):
               if not path.exists():
-                  print(f"{name}: missing")
-                  return None
+                  return []
               text = path.read_text(errors="replace").strip()
               start = text.find("[")
               if start == -1:
@@ -204,94 +167,45 @@ jobs:
               data = json.loads(text)
               return data if isinstance(data, list) else [data]
 
-          def split_phases(rows):
-              phases = {}
-              for r in rows:
-                  if r.get("n_prompt", 0) > 0:
-                      phases["prefill"] = r
-                  if r.get("n_gen", 0) > 0:
-                      phases["decode"] = r
-              return phases
-
-          summaries = {}
           rows_out = []
 
-          print("=== RESULTS ===")
-
-          for backend in ["cuda", "vulkan"]:
-              rows = load_rows(backend)
-              if not rows:
-                  continue
-
-              phases = split_phases(rows)
-              summaries[backend] = phases
-
-              print(f"\n{backend.upper()}")
-              for phase in ["prefill", "decode"]:
-                  r = phases.get(phase)
-                  if not r:
-                      print(f"{phase}: missing")
-                      continue
-
-                  print(f"{phase}: {r.get('avg_ts')} tok/s")
-                  print(f"  stddev: {r.get('stddev_ts')}")
-                  print(f"  gpu: {r.get('gpu_info')}")
-                  print(f"  backend: {r.get('backends')}")
+          for label, fname in files.items():
+              for r in load_rows(base / fname):
+                  phase = "unknown"
+                  if r.get("n_prompt", 0) > 0 and r.get("n_gen", 0) == 0:
+                      phase = "prefill"
+                  elif r.get("n_gen", 0) > 0 and r.get("n_prompt", 0) == 0:
+                      phase = "decode"
+                  elif r.get("n_gen", 0) > 0 and r.get("n_prompt", 0) > 0:
+                      phase = "mixed"
 
                   rows_out.append({
-                      "backend": backend,
+                      "experiment": label,
                       "phase": phase,
-                      "tokens_per_second": r.get("avg_ts"),
-                      "stddev_tokens_per_second": r.get("stddev_ts"),
-                      "gpu_info": r.get("gpu_info"),
-                      "cpu_info": r.get("cpu_info"),
-                      "backends": r.get("backends"),
-                      "model": r.get("model_filename"),
+                      "backend": r.get("backends"),
+                      "gpu": r.get("gpu_info"),
+                      "cpu": r.get("cpu_info"),
                       "n_prompt": r.get("n_prompt"),
                       "n_gen": r.get("n_gen"),
-                      "build_commit": r.get("build_commit"),
+                      "tokens_per_second": r.get("avg_ts"),
+                      "stddev_tokens_per_second": r.get("stddev_ts"),
+                      "model": r.get("model_filename"),
+                      "commit": r.get("build_commit"),
                       "test_time": r.get("test_time"),
                   })
 
-          if "cuda" in summaries and "vulkan" in summaries:
-              print("\n=== PORTABILITY COST: Vulkan vs CUDA ===")
-
-              for phase in ["prefill", "decode"]:
-                  c = summaries["cuda"].get(phase)
-                  v = summaries["vulkan"].get(phase)
-
-                  if not c or not v:
-                      continue
-
-                  c_perf = c.get("avg_ts")
-                  v_perf = v.get("avg_ts")
-
-                  if not c_perf or not v_perf:
-                      continue
-
-                  ratio = v_perf / c_perf
-                  cost = 1.0 - ratio
-
-                  print(f"{phase}:")
-                  print(f"  CUDA:        {c_perf:.3f} tok/s")
-                  print(f"  Vulkan:      {v_perf:.3f} tok/s")
-                  print(f"  Vulkan/CUDA: {ratio:.3f}x")
-                  print(f"  Cost:        {cost * 100:.2f}%")
-          else:
-              print("\nVulkan or CUDA missing; portability cost not computed.")
+          for row in rows_out:
+              print(row)
 
           if rows_out:
               with (base / "summary.csv").open("w", newline="") as f:
                   writer = csv.DictWriter(f, fieldnames=list(rows_out[0].keys()))
                   writer.writeheader()
                   writer.writerows(rows_out)
-              print("Saved results/summary.csv")
-          else:
-              print("No benchmark rows available.")
           PY
 
-      - name: Upload benchmark results
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: self-hosted-rtx4080-cuda-vulkan-results
+          name: fast-component-full-system-results
           path: results/
