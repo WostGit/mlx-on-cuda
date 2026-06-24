@@ -1,12 +1,11 @@
-name: Next Backends - MLX SYCL Native Vulkan
+name: WSL2 Vulkan Attempt
 
 on:
   workflow_dispatch:
 
 jobs:
-  native-vulkan:
-    name: Native Vulkan llama.cpp
-    runs-on: [self-hosted]
+  wsl2-vulkan:
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -17,33 +16,34 @@ jobs:
           rm -rf results llama.cpp vulkan-sdk
           mkdir -p results
 
-      - name: Native Vulkan diagnostics
+      - name: WSL2 diagnostics
         run: |
           set -euxo pipefail
 
           {
-            echo "# Native Vulkan Diagnostics"
+            echo "# WSL2 Vulkan Diagnostics"
             date
             uname -a
             lsb_release -a || true
-            lscpu || true
 
-            echo "## NVIDIA"
+            echo "## WSL check"
+            grep -i microsoft /proc/version || true
+
+            echo "## GPU / CUDA"
             nvidia-smi || true
+            which nvcc || true
+            nvcc --version || true
 
-            echo "## Vulkan"
+            echo "## Vulkan before SDK"
             which vulkaninfo || true
             vulkaninfo --summary || true
 
-            echo "## Shader tools"
-            which glslc || true
-            glslc --version || true
-            which glslangValidator || true
-            glslangValidator --version || true
+            echo "## WSL GPU libs"
+            ls -lah /usr/lib/wsl/lib || true
 
-            echo "## ICD files"
+            echo "## Vulkan ICD files"
             find /usr/share/vulkan/icd.d -maxdepth 1 -type f -print -exec cat {} \; || true
-          } | tee results/00_native_vulkan_diagnostics.md
+          } | tee results/00_wsl2_diagnostics.md
 
       - name: Install dependencies
         run: |
@@ -56,14 +56,9 @@ jobs:
 
           python3 -m pip install --user "huggingface_hub<1.0"
 
-      - name: Install Vulkan SDK if glslc missing
+      - name: Install Vulkan SDK for glslc
         run: |
           set -euxo pipefail
-
-          if command -v glslc >/dev/null 2>&1; then
-            echo "glslc already exists: $(command -v glslc)"
-            exit 0
-          fi
 
           SDK_VERSION="1.3.296.0"
           SDK_TARBALL="vulkansdk-linux-x86_64-${SDK_VERSION}.tar.xz"
@@ -79,38 +74,53 @@ jobs:
           echo "VULKAN_SDK=$GITHUB_WORKSPACE/vulkan-sdk/${SDK_VERSION}/x86_64" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/vulkan-sdk/${SDK_VERSION}/x86_64/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
-      - name: Verify real Vulkan GPU
+      - name: Post-SDK Vulkan check
         run: |
           set -euxo pipefail
 
-          vulkaninfo --summary | tee results/01_vulkan_after_sdk.txt || true
+          {
+            echo "# Post-SDK Vulkan Check"
 
-          if vulkaninfo --summary 2>&1 | grep -qi "llvmpipe"; then
-            echo "ERROR: Vulkan sees llvmpipe. This is not a valid native GPU Vulkan run."
-            exit 1
+            echo "## glslc"
+            which glslc || true
+            glslc --version || true
+
+            echo "## vulkaninfo"
+            vulkaninfo --summary || true
+          } | tee results/01_post_sdk_vulkan.md
+
+          if vulkaninfo --summary 2>&1 | grep -qi "NVIDIA"; then
+            echo "VULKAN_REAL_GPU=1" | tee results/vulkan_real_gpu.txt
+          else
+            echo "VULKAN_REAL_GPU=0" | tee results/vulkan_real_gpu.txt
           fi
 
-          if ! vulkaninfo --summary 2>&1 | grep -qi "NVIDIA\|AMD\|Intel"; then
-            echo "ERROR: No real GPU visible to Vulkan."
-            exit 1
+          if vulkaninfo --summary 2>&1 | grep -qi "llvmpipe"; then
+            echo "VULKAN_LLVMPIPE=1" | tee results/vulkan_llvmpipe.txt
+          else
+            echo "VULKAN_LLVMPIPE=0" | tee results/vulkan_llvmpipe.txt
           fi
 
       - name: Clone llama.cpp
         run: |
           set -euxo pipefail
+
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
           cd llama.cpp
+
           git rev-parse HEAD | tee ../results/llama_commit.txt
           git log -1 --oneline | tee ../results/llama_commit_oneline.txt
 
       - name: Download model
         run: |
           set -euxo pipefail
+
           cd llama.cpp
           mkdir -p models
 
           python3 - <<'PY'
           from huggingface_hub import hf_hub_download
+
           hf_hub_download(
               repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
               filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
@@ -120,9 +130,29 @@ jobs:
 
           sha256sum models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/model_sha256.txt
 
-      - name: Build Vulkan
+      - name: Build CUDA baseline
         run: |
           set -euxo pipefail
+
+          cd llama.cpp
+
+          cmake -B build-cuda -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=89 \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            2>&1 | tee ../results/cmake_cuda.log
+
+          cmake --build build-cuda --target llama-bench -j4 \
+            2>&1 | tee ../results/build_cuda.log
+
+      - name: Build Vulkan backend
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+
           cd llama.cpp
 
           cmake -B build-vulkan -G Ninja \
@@ -131,296 +161,78 @@ jobs:
             -DVulkan_GLSLC_EXECUTABLE="$(command -v glslc)" \
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_BUILD_SERVER=OFF
+            -DLLAMA_BUILD_SERVER=OFF \
+            2>&1 | tee ../results/cmake_vulkan.log
 
-          cmake --build build-vulkan --target llama-bench -j4
+          cmake --build build-vulkan --target llama-bench -j4 \
+            2>&1 | tee ../results/build_vulkan.log
 
-      - name: Run Vulkan benchmark
+      - name: Run CUDA benchmark
         run: |
           set -euxo pipefail
+
           cd llama.cpp
           MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
-          ./build-vulkan/bin/llama-bench -m "$MODEL" -p 32 -n 512 -ngl 99 -o json | tee ../results/vulkan_decode_proxy.json
-          ./build-vulkan/bin/llama-bench -m "$MODEL" -p 4096 -n 0 -ngl 99 -o json | tee ../results/vulkan_prefill_proxy.json
-          ./build-vulkan/bin/llama-bench -m "$MODEL" -p 2048 -n 256 -ngl 99 -o json | tee ../results/vulkan_full_system.json
+          ./build-cuda/bin/llama-bench \
+            -m "$MODEL" \
+            -p 2048 \
+            -n 256 \
+            -ngl 99 \
+            -o json | tee ../results/cuda_full_system.json
 
-      - name: Upload Vulkan results
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-vulkan-results
-          path: results/
-
-  mlx-apple:
-    name: MLX Apple Silicon
-    runs-on: [self-hosted, macos, apple-silicon]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Reset
-        run: |
-          set -euxo pipefail
-          rm -rf results
-          mkdir -p results
-
-      - name: System diagnostics
-        run: |
-          set -euxo pipefail
-
-          {
-            echo "# MLX Apple Diagnostics"
-            date
-            uname -a
-            sw_vers
-            sysctl -n machdep.cpu.brand_string || true
-            system_profiler SPHardwareDataType || true
-            python3 --version
-          } | tee results/00_mlx_apple_diagnostics.md
-
-      - name: Create Python environment
-        run: |
-          set -euxo pipefail
-
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install mlx numpy
-
-      - name: Run MLX component benchmarks
-        run: |
-          set -euxo pipefail
-          source .venv/bin/activate
-
-          cat > mlx_component_bench.py <<'PY'
-          import json
-          import time
-          import platform
-          import mlx.core as mx
-
-          def sync():
-              mx.eval(mx.array([0.0]))
-
-          def bench(name, fn, warmup=5, iters=50):
-              for _ in range(warmup):
-                  y = fn()
-                  mx.eval(y)
-              times = []
-              for _ in range(iters):
-                  t0 = time.perf_counter()
-                  y = fn()
-                  mx.eval(y)
-                  t1 = time.perf_counter()
-                  times.append(t1 - t0)
-              return {
-                  "backend": "MLX",
-                  "experiment": name,
-                  "avg_ms": sum(times) / len(times) * 1000,
-                  "min_ms": min(times) * 1000,
-                  "max_ms": max(times) * 1000,
-                  "iters": iters,
-                  "platform": platform.platform(),
-              }
-
-          mx.random.seed(0)
-
-          results = []
-
-          A = mx.random.normal((4096, 4096), dtype=mx.float16)
-          B = mx.random.normal((4096, 4096), dtype=mx.float16)
-          x = mx.random.normal((4096,), dtype=mx.float16)
-
-          results.append(bench("gemm_4096_fp16", lambda: A @ B))
-          results.append(bench("gemv_4096_fp16", lambda: A @ x))
-
-          Q = mx.random.normal((1, 16, 512, 64), dtype=mx.float16)
-          K = mx.random.normal((1, 16, 512, 64), dtype=mx.float16)
-          V = mx.random.normal((1, 16, 512, 64), dtype=mx.float16)
-
-          def attention_proxy():
-              S = Q @ mx.swapaxes(K, -1, -2)
-              P = mx.softmax(S / 8.0, axis=-1)
-              return P @ V
-
-          results.append(bench("attention_proxy_512", attention_proxy, warmup=3, iters=20))
-
-          print(json.dumps(results, indent=2))
-          PY
-
-          python mlx_component_bench.py | tee results/mlx_component_bench.json
-
-      - name: Upload MLX Apple results
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlx-apple-results
-          path: results/
-
-  sycl:
-    name: SYCL CPU / GPU Probe
-    runs-on: [self-hosted, sycl]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Reset
-        run: |
-          set -euxo pipefail
-          rm -rf results sycl-bench
-          mkdir -p results sycl-bench
-
-      - name: SYCL diagnostics
-        run: |
-          set -euxo pipefail
-
-          {
-            echo "# SYCL Diagnostics"
-            date
-            uname -a
-            lsb_release -a || true
-            which icpx || true
-            icpx --version || true
-            which sycl-ls || true
-            sycl-ls || true
-          } | tee results/00_sycl_diagnostics.md
-
-      - name: Build SYCL microbench
-        run: |
-          set -euxo pipefail
-
-          if ! command -v icpx >/dev/null 2>&1; then
-            echo "icpx missing. Install Intel oneAPI DPC++ on this runner." | tee results/sycl_skipped.txt
-            exit 0
-          fi
-
-          cat > sycl-bench/main.cpp <<'CPP'
-          #include <sycl/sycl.hpp>
-          #include <chrono>
-          #include <iostream>
-          #include <vector>
-          #include <cmath>
-
-          using namespace sycl;
-
-          template <typename F>
-          double time_ms(F&& f, int iters) {
-              auto t0 = std::chrono::high_resolution_clock::now();
-              for (int i = 0; i < iters; ++i) f();
-              auto t1 = std::chrono::high_resolution_clock::now();
-              return std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
-          }
-
-          int main() {
-              queue q{default_selector_v};
-
-              auto dev = q.get_device();
-              std::cout << "{\n";
-              std::cout << "\"backend\":\"SYCL\",\n";
-              std::cout << "\"device\":\"" << dev.get_info<info::device::name>() << "\",\n";
-              std::cout << "\"vendor\":\"" << dev.get_info<info::device::vendor>() << "\",\n";
-
-              constexpr int N = 1024;
-              constexpr int ITERS = 20;
-
-              std::vector<float> A(N*N, 1.0f);
-              std::vector<float> B(N*N, 1.0f);
-              std::vector<float> C(N*N, 0.0f);
-
-              buffer<float, 2> a(A.data(), range<2>(N, N));
-              buffer<float, 2> b(B.data(), range<2>(N, N));
-              buffer<float, 2> c(C.data(), range<2>(N, N));
-
-              auto gemm_ms = time_ms([&]() {
-                  q.submit([&](handler& h) {
-                      accessor aa(a, h, read_only);
-                      accessor bb(b, h, read_only);
-                      accessor cc(c, h, write_only, no_init);
-
-                      h.parallel_for(range<2>(N, N), [=](id<2> idx) {
-                          int i = idx[0];
-                          int j = idx[1];
-                          float sum = 0.0f;
-                          for (int k = 0; k < N; ++k) {
-                              sum += aa[i][k] * bb[k][j];
-                          }
-                          cc[i][j] = sum;
-                      });
-                  }).wait();
-              }, ITERS);
-
-              std::cout << "\"gemm_1024_ms\":" << gemm_ms << "\n";
-              std::cout << "}\n";
-
-              return 0;
-          }
-          CPP
-
-          icpx -fsycl -O3 sycl-bench/main.cpp -o sycl-bench/sycl_bench
-          ./sycl-bench/sycl_bench | tee results/sycl_component_bench.json
-
-      - name: Upload SYCL results
-        uses: actions/upload-artifact@v4
-        with:
-          name: sycl-results
-          path: results/
-
-  mlx-cuda-probe:
-    name: MLX-on-CUDA Probe
-    runs-on: [self-hosted, cuda]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Reset
-        run: |
-          set -euxo pipefail
-          rm -rf results
-          mkdir -p results
-
-      - name: Diagnostics
-        run: |
-          set -euxo pipefail
-
-          {
-            echo "# MLX-on-CUDA Probe Diagnostics"
-            date
-            uname -a
-            nvidia-smi || true
-            nvcc --version || true
-            python3 --version
-          } | tee results/00_mlx_cuda_diagnostics.md
-
-      - name: Probe repository
-        run: |
-          set -euxo pipefail
-
-          {
-            echo "# Repository Contents"
-            pwd
-            find . -maxdepth 3 -type f | sort | sed 's#^\./##'
-          } | tee results/repository_files.txt
-
-      - name: Run MLX-on-CUDA tests if present
+      - name: Run Vulkan only if real GPU is visible
         continue-on-error: true
         run: |
           set -euxo pipefail
 
-          if [ -f "CMakeLists.txt" ]; then
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tee results/mlx_cuda_cmake.log
-            cmake --build build -j4 2>&1 | tee results/mlx_cuda_build.log
+          cd llama.cpp
+
+          if [ ! -x build-vulkan/bin/llama-bench ]; then
+            echo "Vulkan skipped: binary missing." | tee ../results/vulkan_run_skipped.txt
+            exit 0
           fi
 
-          if [ -f "pytest.ini" ] || find . -maxdepth 3 -name "test_*.py" | grep -q .; then
-            python3 -m pip install --user pytest numpy || true
-            python3 -m pytest -q 2>&1 | tee results/mlx_cuda_pytest.log
+          if ! vulkaninfo --summary 2>&1 | grep -qi "NVIDIA"; then
+            echo "Vulkan skipped: WSL2 exposes only llvmpipe, not NVIDIA Vulkan." | tee ../results/vulkan_run_skipped.txt
+            exit 0
           fi
 
-          if find . -maxdepth 3 -type f -perm -111 | grep -E "bench|benchmark" | head -1; then
-            BENCH="$(find . -maxdepth 3 -type f -perm -111 | grep -E "bench|benchmark" | head -1)"
-            "$BENCH" 2>&1 | tee results/mlx_cuda_benchmark.log
-          fi
+          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
-      - name: Upload MLX-on-CUDA probe results
+          ./build-vulkan/bin/llama-bench \
+            -m "$MODEL" \
+            -p 2048 \
+            -n 256 \
+            -ngl 99 \
+            -o json | tee ../results/vulkan_full_system.json
+
+      - name: Write conclusion
+        if: always()
+        run: |
+          set -euxo pipefail
+
+          {
+            echo "# WSL2 Vulkan Attempt Conclusion"
+            echo
+            echo "This job intentionally uses only runs-on: self-hosted."
+            echo
+            echo "## Expected interpretation"
+            echo
+            echo "- If CUDA works, WSL2 GPU compute is available."
+            echo "- If Vulkan builds, the Vulkan SDK / glslc problem is fixed."
+            echo "- If vulkaninfo shows llvmpipe only, this is not valid NVIDIA Vulkan."
+            echo "- In that case, use this as reproducibility evidence, not performance evidence."
+            echo
+            echo "## Status files"
+            cat results/vulkan_real_gpu.txt || true
+            cat results/vulkan_llvmpipe.txt || true
+            cat results/vulkan_run_skipped.txt || true
+          } | tee results/CONCLUSION.md
+
+      - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-cuda-probe-results
+          name: wsl2-vulkan-attempt-results
           path: results/
