@@ -1,4 +1,4 @@
-name: Meeting Demo - Component to Full-System LLM Benchmark
+name: Ultra Verbose CUDA Vulkan MLX SYCL Probe
 
 on:
   workflow_dispatch:
@@ -11,10 +11,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare results folder
+      - name: Reset workspace
         run: |
           set -euxo pipefail
-          rm -rf results llama.cpp
+          rm -rf results llama.cpp vulkan-sdk
           mkdir -p results
 
       - name: System diagnostics
@@ -36,23 +36,35 @@ jobs:
             echo "## CPU"
             lscpu || true
             echo
-            echo "## NVIDIA GPU"
+            echo "## NVIDIA"
             nvidia-smi || true
             echo
-            echo "## CUDA compiler"
+            echo "## CUDA"
+            which nvcc || true
             nvcc --version || true
             echo
-            echo "## Vulkan probe"
+            echo "## Vulkan before repair"
+            which vulkaninfo || true
             vulkaninfo --summary || true
-          } | tee results/system_diagnostics.md
+            echo
+            echo "## Shader tools before repair"
+            which glslc || true
+            glslc --version || true
+            which glslangValidator || true
+            glslangValidator --version || true
+          } | tee results/00_system_diagnostics.md
 
-      - name: Install dependencies
+      - name: Install apt dependencies
         run: |
           set -euxo pipefail
 
           sudo apt-get update -y
           sudo apt-get install -y \
             git \
+            curl \
+            unzip \
+            tar \
+            xz-utils \
             cmake \
             build-essential \
             ninja-build \
@@ -65,6 +77,79 @@ jobs:
 
           python3 -m pip install --user "huggingface_hub<1.0"
 
+      - name: Install official Vulkan SDK for glslc
+        run: |
+          set -euxo pipefail
+
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p vulkan-sdk
+          cd vulkan-sdk
+
+          SDK_VERSION="1.3.296.0"
+          SDK_TARBALL="vulkansdk-linux-x86_64-${SDK_VERSION}.tar.xz"
+          SDK_URL="https://sdk.lunarg.com/sdk/download/${SDK_VERSION}/linux/${SDK_TARBALL}"
+
+          echo "Downloading Vulkan SDK from: $SDK_URL"
+          curl -L "$SDK_URL" -o "$SDK_TARBALL"
+
+          tar -xf "$SDK_TARBALL"
+
+          SDK_DIR="$(find . -maxdepth 1 -type d -name "${SDK_VERSION}" | head -1)"
+          echo "SDK_DIR=$SDK_DIR"
+
+          if [ -z "$SDK_DIR" ]; then
+            echo "Vulkan SDK extraction failed."
+            exit 1
+          fi
+
+          echo "$GITHUB_WORKSPACE/vulkan-sdk/${SDK_VERSION}/x86_64/bin" >> "$GITHUB_PATH"
+          echo "VULKAN_SDK=$GITHUB_WORKSPACE/vulkan-sdk/${SDK_VERSION}/x86_64" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/vulkan-sdk/${SDK_VERSION}/x86_64/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Post-SDK Vulkan diagnostics
+        run: |
+          set -euxo pipefail
+
+          {
+            echo "# Post-SDK Vulkan Diagnostics"
+            echo
+            echo "## PATH"
+            echo "$PATH"
+            echo
+            echo "## VULKAN_SDK"
+            echo "${VULKAN_SDK:-missing}"
+            echo
+            echo "## glslc"
+            which glslc || true
+            glslc --version || true
+            echo
+            echo "## glslangValidator"
+            which glslangValidator || true
+            glslangValidator --version || true
+            echo
+            echo "## Vulkan"
+            which vulkaninfo || true
+            vulkaninfo --summary || true
+            echo
+            echo "## Vulkan ICD files"
+            find /usr/share/vulkan/icd.d -maxdepth 1 -type f -print -exec cat {} \; || true
+            echo
+            echo "## WSL GPU libraries"
+            ls -lah /usr/lib/wsl/lib || true
+          } | tee results/01_post_sdk_vulkan_diagnostics.md
+
+          if vulkaninfo --summary 2>&1 | grep -qi "NVIDIA"; then
+            echo "VULKAN_NVIDIA_VISIBLE=1" | tee results/vulkan_nvidia_visible.txt
+          else
+            echo "VULKAN_NVIDIA_VISIBLE=0" | tee results/vulkan_nvidia_visible.txt
+          fi
+
+          if vulkaninfo --summary 2>&1 | grep -qi "llvmpipe"; then
+            echo "VULKAN_LLVMPIPE_VISIBLE=1" | tee results/vulkan_llvmpipe_visible.txt
+          else
+            echo "VULKAN_LLVMPIPE_VISIBLE=0" | tee results/vulkan_llvmpipe_visible.txt
+          fi
+
       - name: Clone llama.cpp
         run: |
           set -euxo pipefail
@@ -75,7 +160,7 @@ jobs:
           git rev-parse HEAD | tee ../results/llama_commit.txt
           git log -1 --oneline | tee ../results/llama_commit_oneline.txt
 
-      - name: Download benchmark model
+      - name: Download model
         run: |
           set -euxo pipefail
 
@@ -107,10 +192,50 @@ jobs:
             -DCMAKE_CUDA_ARCHITECTURES=89 \
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_BUILD_SERVER=OFF
+            -DLLAMA_BUILD_SERVER=OFF \
+            2>&1 | tee ../results/10_cmake_cuda.log
 
-          cmake --build build-cuda --target llama-bench -j4
+          cmake --build build-cuda --target llama-bench -j4 \
+            2>&1 | tee ../results/11_build_cuda.log
+
           ls -lh build-cuda/bin/llama-bench | tee ../results/cuda_binary.txt
+
+      - name: Try build Vulkan llama-bench
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+
+          cd llama.cpp
+
+          {
+            echo "# Vulkan Build Attempt"
+            echo
+            echo "## glslc"
+            which glslc || true
+            glslc --version || true
+            echo
+            echo "## vulkaninfo"
+            vulkaninfo --summary || true
+          } | tee ../results/20_vulkan_build_attempt.md
+
+          if ! command -v glslc >/dev/null 2>&1; then
+            echo "Vulkan skipped: glslc still missing after Vulkan SDK install." | tee ../results/vulkan_skipped.txt
+            exit 0
+          fi
+
+          cmake -B build-vulkan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_VULKAN=ON \
+            -DVulkan_GLSLC_EXECUTABLE="$(command -v glslc)" \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            2>&1 | tee ../results/21_cmake_vulkan.log
+
+          cmake --build build-vulkan --target llama-bench -j4 \
+            2>&1 | tee ../results/22_build_vulkan.log
+
+          ls -lh build-vulkan/bin/llama-bench | tee ../results/vulkan_binary.txt
 
       - name: Start GPU telemetry
         run: |
@@ -127,71 +252,66 @@ jobs:
 
           echo $! > results/gpu_telemetry.pid
 
-      - name: Run component-style CUDA benchmarks
+      - name: CUDA component proxies
         run: |
           set -euxo pipefail
 
           cd llama.cpp
           MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-
-          echo "============================================================"
-          echo "Experiment A: decode-heavy proxy"
-          echo "Small prompt, long generation. Intended to stress decode/GEMV/KV-cache behavior."
-          echo "Command: llama-bench -p 32 -n 512"
-          echo "============================================================"
 
           ./build-cuda/bin/llama-bench \
             -m "$MODEL" \
             -p 32 \
             -n 512 \
             -ngl 99 \
-            -o json | tee ../results/01_decode_heavy_proxy.json
-
-          echo "============================================================"
-          echo "Experiment B: prefill-heavy proxy"
-          echo "Large prompt, no generation. Intended to stress prompt processing / GEMM-like behavior."
-          echo "Command: llama-bench -p 4096 -n 0"
-          echo "============================================================"
+            -o json | tee ../results/30_cuda_decode_heavy_proxy.json
 
           ./build-cuda/bin/llama-bench \
             -m "$MODEL" \
             -p 4096 \
             -n 0 \
             -ngl 99 \
-            -o json | tee ../results/02_prefill_heavy_proxy.json
-
-          echo "============================================================"
-          echo "Experiment C: balanced proxy"
-          echo "Moderate prompt and long generation. Intended to combine prefill and decode behavior."
-          echo "Command: llama-bench -p 512 -n 512"
-          echo "============================================================"
+            -o json | tee ../results/31_cuda_prefill_heavy_proxy.json
 
           ./build-cuda/bin/llama-bench \
             -m "$MODEL" \
             -p 512 \
             -n 512 \
             -ngl 99 \
-            -o json | tee ../results/03_balanced_proxy.json
-
-      - name: Run full-system CUDA benchmark
-        run: |
-          set -euxo pipefail
-
-          cd llama.cpp
-          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-
-          echo "============================================================"
-          echo "Experiment D: full-system inference benchmark"
-          echo "Larger prompt plus generation. Used as the end-to-end target to explain."
-          echo "Command: llama-bench -p 2048 -n 256"
-          echo "============================================================"
+            -o json | tee ../results/32_cuda_balanced_proxy.json
 
           ./build-cuda/bin/llama-bench \
             -m "$MODEL" \
             -p 2048 \
             -n 256 \
             -ngl 99 \
-            -o json | tee ../results/04_full_system.json
+            -o json | tee ../results/33_cuda_full_system.json
+
+      - name: Vulkan benchmark if usable
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+
+          cd llama.cpp
+
+          if [ ! -x build-vulkan/bin/llama-bench ]; then
+            echo "Vulkan run skipped: binary missing." | tee ../results/vulkan_run_skipped.txt
+            exit 0
+          fi
+
+          if ! vulkaninfo --summary 2>&1 | grep -qi "NVIDIA"; then
+            echo "Vulkan run skipped: NVIDIA GPU not visible to Vulkan. Avoiding llvmpipe benchmark." | tee ../results/vulkan_run_skipped.txt
+            exit 0
+          fi
+
+          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+          ./build-vulkan/bin/llama-bench \
+            -m "$MODEL" \
+            -p 2048 \
+            -n 256 \
+            -ngl 99 \
+            -o json | tee ../results/40_vulkan_full_system.json
 
       - name: Stop GPU telemetry
         if: always()
@@ -205,100 +325,27 @@ jobs:
           head -5 results/gpu_telemetry_raw.csv || true
           tail -5 results/gpu_telemetry_raw.csv || true
 
-      - name: Optional Vulkan probe
-        continue-on-error: true
-        run: |
-          set -euxo pipefail
-
-          cd llama.cpp
-
-          {
-            echo "# Vulkan Probe"
-            echo
-            echo "This section is included to document whether Vulkan is usable on the same host."
-            echo
-            echo "## vulkaninfo"
-            vulkaninfo --summary || true
-            echo
-            echo "## glslc"
-            which glslc || true
-            glslc --version || true
-            echo
-            echo "## glslangValidator"
-            which glslangValidator || true
-            glslangValidator --version || true
-          } | tee ../results/vulkan_probe.md
-
-          if ! command -v glslc >/dev/null 2>&1; then
-            echo "Vulkan skipped: glslc missing." | tee ../results/vulkan_skipped.txt
-            exit 0
-          fi
-
-          if ! vulkaninfo --summary | grep -qi "NVIDIA"; then
-            echo "Vulkan skipped: NVIDIA GPU not visible to Vulkan." | tee ../results/vulkan_skipped.txt
-            exit 0
-          fi
-
-          cmake -B build-vulkan -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_VULKAN=ON \
-            -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_BUILD_SERVER=OFF
-
-          cmake --build build-vulkan --target llama-bench -j4
-
-          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-
-          ./build-vulkan/bin/llama-bench \
-            -m "$MODEL" \
-            -p 2048 \
-            -n 256 \
-            -ngl 99 \
-            -o json | tee ../results/05_vulkan_full_system.json
-
-      - name: Generate narrative analysis report
+      - name: Generate ultra verbose narrative report
         run: |
           set -euxo pipefail
 
           python3 - <<'PY'
           import csv
           import json
-          import math
-          import statistics
           from pathlib import Path
 
           base = Path("results")
 
-          experiments = {
-              "decode_heavy_proxy": {
-                  "file": "01_decode_heavy_proxy.json",
-                  "description": "Small prompt + long generation. Proxy for decode / GEMV / KV-cache dominated behavior.",
-                  "role": "component proxy",
-              },
-              "prefill_heavy_proxy": {
-                  "file": "02_prefill_heavy_proxy.json",
-                  "description": "Large prompt + no generation. Proxy for prefill / GEMM-like prompt processing.",
-                  "role": "component proxy",
-              },
-              "balanced_proxy": {
-                  "file": "03_balanced_proxy.json",
-                  "description": "Moderate prompt + long generation. Proxy for mixed prefill/decode behavior.",
-                  "role": "component proxy",
-              },
-              "full_system": {
-                  "file": "04_full_system.json",
-                  "description": "End-to-end target benchmark with larger prompt and generation.",
-                  "role": "full system",
-              },
-              "vulkan_full_system": {
-                  "file": "05_vulkan_full_system.json",
-                  "description": "Optional Vulkan full-system comparison if Vulkan is available.",
-                  "role": "full system optional",
-              },
+          files = {
+              "cuda_decode_heavy_proxy": "30_cuda_decode_heavy_proxy.json",
+              "cuda_prefill_heavy_proxy": "31_cuda_prefill_heavy_proxy.json",
+              "cuda_balanced_proxy": "32_cuda_balanced_proxy.json",
+              "cuda_full_system": "33_cuda_full_system.json",
+              "vulkan_full_system": "40_vulkan_full_system.json",
           }
 
-          def load_rows(path):
+          def load_rows(fname):
+              path = base / fname
               if not path.exists():
                   return []
               text = path.read_text(errors="replace").strip()
@@ -310,13 +357,13 @@ jobs:
               try:
                   data = json.loads(text)
               except Exception as e:
-                  print("Failed to parse", path, e)
+                  print("Parse failed", fname, e)
                   return []
               return data if isinstance(data, list) else [data]
 
-          def classify_phase(row):
-              p = int(row.get("n_prompt", 0) or 0)
-              g = int(row.get("n_gen", 0) or 0)
+          def phase(r):
+              p = int(r.get("n_prompt", 0) or 0)
+              g = int(r.get("n_gen", 0) or 0)
               if p > 0 and g == 0:
                   return "prefill"
               if p == 0 and g > 0:
@@ -325,261 +372,158 @@ jobs:
                   return "mixed"
               return "unknown"
 
-          rows_out = []
-
-          for name, meta in experiments.items():
-              rows = load_rows(base / meta["file"])
-              for r in rows:
-                  rows_out.append({
-                      "experiment": name,
-                      "role": meta["role"],
-                      "description": meta["description"],
-                      "phase": classify_phase(r),
+          rows = []
+          for exp, fname in files.items():
+              for r in load_rows(fname):
+                  rows.append({
+                      "experiment": exp,
+                      "phase": phase(r),
                       "backend": r.get("backends"),
                       "gpu": r.get("gpu_info"),
                       "cpu": r.get("cpu_info"),
-                      "model": r.get("model_filename"),
-                      "model_type": r.get("model_type"),
-                      "model_size_bytes": r.get("model_size"),
-                      "model_params": r.get("model_n_params"),
                       "n_prompt": r.get("n_prompt"),
                       "n_gen": r.get("n_gen"),
                       "tokens_per_second": r.get("avg_ts"),
                       "stddev_tokens_per_second": r.get("stddev_ts"),
                       "avg_ns": r.get("avg_ns"),
                       "stddev_ns": r.get("stddev_ns"),
-                      "n_batch": r.get("n_batch"),
-                      "n_ubatch": r.get("n_ubatch"),
-                      "n_threads": r.get("n_threads"),
-                      "n_gpu_layers": r.get("n_gpu_layers"),
-                      "type_k": r.get("type_k"),
-                      "type_v": r.get("type_v"),
-                      "build_commit": r.get("build_commit"),
+                      "model": r.get("model_filename"),
+                      "model_type": r.get("model_type"),
+                      "model_size": r.get("model_size"),
+                      "model_params": r.get("model_n_params"),
+                      "commit": r.get("build_commit"),
                       "test_time": r.get("test_time"),
                   })
 
-          with (base / "summary_verbose.csv").open("w", newline="") as f:
-              if rows_out:
-                  writer = csv.DictWriter(f, fieldnames=list(rows_out[0].keys()))
+          if rows:
+              with (base / "summary_verbose.csv").open("w", newline="") as f:
+                  writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
                   writer.writeheader()
-                  writer.writerows(rows_out)
+                  writer.writerows(rows)
 
-          # Compact table
-          compact = []
-          for r in rows_out:
-              compact.append({
-                  "experiment": r["experiment"],
-                  "phase": r["phase"],
-                  "backend": r["backend"],
-                  "tokens_per_second": r["tokens_per_second"],
-                  "stddev_tokens_per_second": r["stddev_tokens_per_second"],
-                  "n_prompt": r["n_prompt"],
-                  "n_gen": r["n_gen"],
-                  "gpu": r["gpu"],
-              })
-
-          with (base / "summary_compact.csv").open("w", newline="") as f:
-              if compact:
-                  writer = csv.DictWriter(f, fieldnames=list(compact[0].keys()))
-                  writer.writeheader()
-                  writer.writerows(compact)
-
-          def get_tps(exp, phase):
+          def tps(exp, ph):
               vals = [
                   float(r["tokens_per_second"])
-                  for r in rows_out
-                  if r["experiment"] == exp
-                  and r["phase"] == phase
-                  and r["tokens_per_second"] is not None
+                  for r in rows
+                  if r["experiment"] == exp and r["phase"] == ph and r["tokens_per_second"] is not None
               ]
               return vals[0] if vals else None
 
-          decode_proxy_tps = get_tps("decode_heavy_proxy", "decode")
-          prefill_proxy_tps = get_tps("prefill_heavy_proxy", "prefill")
-          balanced_decode_tps = get_tps("balanced_proxy", "decode")
-          balanced_prefill_tps = get_tps("balanced_proxy", "prefill")
-          full_decode_tps = get_tps("full_system", "decode")
-          full_prefill_tps = get_tps("full_system", "prefill")
+          prefill_proxy = tps("cuda_prefill_heavy_proxy", "prefill")
+          decode_proxy = tps("cuda_decode_heavy_proxy", "decode")
+          full_prefill = tps("cuda_full_system", "prefill")
+          full_decode = tps("cuda_full_system", "decode")
 
-          # Simple prediction narrative:
-          # Use component proxies as naive predictors for full-system phases.
-          prediction_rows = []
-
-          if prefill_proxy_tps and full_prefill_tps:
-              prediction_rows.append({
-                  "target": "full_system_prefill",
-                  "component_proxy": "prefill_heavy_proxy",
-                  "predicted_tps": prefill_proxy_tps,
-                  "actual_tps": full_prefill_tps,
-                  "relative_error_percent": abs(prefill_proxy_tps - full_prefill_tps) / full_prefill_tps * 100,
-              })
-
-          if decode_proxy_tps and full_decode_tps:
-              prediction_rows.append({
-                  "target": "full_system_decode",
-                  "component_proxy": "decode_heavy_proxy",
-                  "predicted_tps": decode_proxy_tps,
-                  "actual_tps": full_decode_tps,
-                  "relative_error_percent": abs(decode_proxy_tps - full_decode_tps) / full_decode_tps * 100,
-              })
+          pred = []
+          if prefill_proxy and full_prefill:
+              pred.append(("full_prefill", "cuda_prefill_heavy_proxy", prefill_proxy, full_prefill, abs(prefill_proxy - full_prefill) / full_prefill * 100))
+          if decode_proxy and full_decode:
+              pred.append(("full_decode", "cuda_decode_heavy_proxy", decode_proxy, full_decode, abs(decode_proxy - full_decode) / full_decode * 100))
 
           with (base / "prediction_vs_actual.csv").open("w", newline="") as f:
-              if prediction_rows:
-                  writer = csv.DictWriter(f, fieldnames=list(prediction_rows[0].keys()))
-                  writer.writeheader()
-                  writer.writerows(prediction_rows)
+              writer = csv.writer(f)
+              writer.writerow(["target", "proxy", "predicted_tps", "actual_tps", "relative_error_percent"])
+              writer.writerows(pred)
 
-          # GPU telemetry summary
-          telemetry_path = base / "gpu_telemetry_raw.csv"
-          telemetry_summary = {}
-
-          if telemetry_path.exists():
-              gpu_utils = []
-              mem_utils = []
-              mem_used = []
-              power = []
-              temps = []
-              sm_clocks = []
-              mem_clocks = []
-
-              for line in telemetry_path.read_text(errors="replace").splitlines():
+          telemetry = base / "gpu_telemetry_raw.csv"
+          gpu_utils = []
+          mem_used = []
+          power = []
+          if telemetry.exists():
+              for line in telemetry.read_text(errors="replace").splitlines():
                   parts = [p.strip() for p in line.split(",")]
                   if len(parts) < 10:
                       continue
                   try:
                       gpu_utils.append(float(parts[2]))
-                      mem_utils.append(float(parts[3]))
                       mem_used.append(float(parts[4]))
                       power.append(float(parts[6]))
-                      temps.append(float(parts[7]))
-                      sm_clocks.append(float(parts[8]))
-                      mem_clocks.append(float(parts[9]))
                   except Exception:
                       pass
 
-              def stats(xs):
-                  if not xs:
-                      return {"avg": None, "max": None, "min": None}
-                  return {
-                      "avg": sum(xs) / len(xs),
-                      "max": max(xs),
-                      "min": min(xs),
-                  }
+          def avg(xs):
+              return sum(xs) / len(xs) if xs else None
 
-              telemetry_summary = {
-                  "gpu_util_percent": stats(gpu_utils),
-                  "memory_util_percent": stats(mem_utils),
-                  "memory_used_mb": stats(mem_used),
-                  "power_watts": stats(power),
-                  "temperature_c": stats(temps),
-                  "sm_clock_mhz": stats(sm_clocks),
-                  "memory_clock_mhz": stats(mem_clocks),
-                  "samples": len(gpu_utils),
-              }
+          def mx(xs):
+              return max(xs) if xs else None
 
-              with (base / "gpu_telemetry_summary.json").open("w") as f:
-                  json.dump(telemetry_summary, f, indent=2)
-
-          def fmt(x, digits=2):
+          def fmt(x):
               if x is None:
                   return "n/a"
               try:
-                  return f"{float(x):,.{digits}f}"
+                  return f"{float(x):,.2f}"
               except Exception:
                   return str(x)
 
-          # Markdown report
+          vulkan_visible = (base / "vulkan_nvidia_visible.txt").read_text(errors="replace").strip() if (base / "vulkan_nvidia_visible.txt").exists() else "unknown"
+          vulkan_llvmpipe = (base / "vulkan_llvmpipe_visible.txt").read_text(errors="replace").strip() if (base / "vulkan_llvmpipe_visible.txt").exists() else "unknown"
+          vulkan_skipped = (base / "vulkan_run_skipped.txt").read_text(errors="replace").strip() if (base / "vulkan_run_skipped.txt").exists() else ""
+          vulkan_build_skipped = (base / "vulkan_skipped.txt").read_text(errors="replace").strip() if (base / "vulkan_skipped.txt").exists() else ""
+
           report = []
-          report.append("# Meeting Demo Report: Component Proxies to Full-System LLM Inference")
+          report.append("# Ultra Verbose Meeting Report")
           report.append("")
-          report.append("## Research narrative")
+          report.append("## Research question")
           report.append("")
-          report.append("This run is designed to demonstrate a thesis-shaped workflow rather than a simple leaderboard.")
+          report.append("Can component-style measurements explain full-system LLM inference performance across accelerator backends?")
           report.append("")
-          report.append("The idea is:")
+          report.append("## Current run")
           report.append("")
-          report.append("1. Measure component-style proxies for prefill-heavy, decode-heavy, and mixed workloads.")
-          report.append("2. Measure a fuller end-to-end inference workload.")
-          report.append("3. Ask whether the component proxy measurements explain the full-system behavior.")
-          report.append("4. Use GPU telemetry to identify whether the workload is saturating the accelerator.")
+          report.append("This run focuses on CUDA as the validated backend and aggressively probes Vulkan readiness.")
           report.append("")
-          report.append("## Hardware and software provenance")
-          report.append("")
-          report.append("- Model: Qwen2.5-0.5B-Instruct GGUF Q4_K_M")
-          report.append("- Model SHA256: `" + (base / "model_sha256.txt").read_text(errors="replace").strip() + "`" if (base / "model_sha256.txt").exists() else "- Model SHA256: n/a")
-          report.append("- llama.cpp commit: `" + (base / "llama_commit_oneline.txt").read_text(errors="replace").strip() + "`" if (base / "llama_commit_oneline.txt").exists() else "- llama.cpp commit: n/a")
-          report.append("")
-          report.append("## Main results")
+          report.append("## Main benchmark table")
           report.append("")
           report.append("| Experiment | Phase | Backend | Prompt | Generated | Tokens/s | Stddev |")
-          report.append("|---|---:|---|---:|---:|---:|---:|")
-          for r in compact:
-              report.append(
-                  f"| {r['experiment']} | {r['phase']} | {r['backend']} | "
-                  f"{r['n_prompt']} | {r['n_gen']} | {fmt(r['tokens_per_second'])} | {fmt(r['stddev_tokens_per_second'])} |"
-              )
+          report.append("|---|---|---|---:|---:|---:|---:|")
+          for r in rows:
+              report.append(f"| {r['experiment']} | {r['phase']} | {r['backend']} | {r['n_prompt']} | {r['n_gen']} | {fmt(r['tokens_per_second'])} | {fmt(r['stddev_tokens_per_second'])} |")
 
           report.append("")
-          report.append("## Prediction-style check")
+          report.append("## Prediction check")
           report.append("")
-          if prediction_rows:
-              report.append("| Target | Proxy used | Predicted tok/s | Actual tok/s | Relative error |")
-              report.append("|---|---|---:|---:|---:|")
-              for p in prediction_rows:
-                  report.append(
-                      f"| {p['target']} | {p['component_proxy']} | "
-                      f"{fmt(p['predicted_tps'])} | {fmt(p['actual_tps'])} | {fmt(p['relative_error_percent'])}% |"
-                  )
-          else:
-              report.append("Prediction rows unavailable because one or more component/full-system phases were missing.")
+          report.append("| Target | Proxy | Predicted tok/s | Actual tok/s | Error |")
+          report.append("|---|---|---:|---:|---:|")
+          for target, proxy, p, a, e in pred:
+              report.append(f"| {target} | {proxy} | {fmt(p)} | {fmt(a)} | {fmt(e)}% |")
 
           report.append("")
-          report.append("## Preliminary observations")
+          report.append("## GPU telemetry")
           report.append("")
-          if prefill_proxy_tps and decode_proxy_tps:
-              ratio = prefill_proxy_tps / decode_proxy_tps
-              report.append(f"- Prefill proxy throughput is about **{fmt(ratio, 1)}x** higher than decode proxy throughput.")
-          if full_prefill_tps and full_decode_tps:
-              ratio = full_prefill_tps / full_decode_tps
-              report.append(f"- Full-system prefill throughput is about **{fmt(ratio, 1)}x** higher than full-system decode throughput.")
-          if prediction_rows:
-              for p in prediction_rows:
-                  report.append(
-                      f"- Naive component proxy prediction for `{p['target']}` has **{fmt(p['relative_error_percent'])}%** relative error."
-                  )
-
-          if telemetry_summary:
-              report.append("")
-              report.append("## GPU telemetry summary")
-              report.append("")
-              report.append(f"- Samples: {telemetry_summary.get('samples')}")
-              report.append(f"- Avg GPU utilization: {fmt(telemetry_summary['gpu_util_percent']['avg'])}%")
-              report.append(f"- Max GPU utilization: {fmt(telemetry_summary['gpu_util_percent']['max'])}%")
-              report.append(f"- Avg memory used: {fmt(telemetry_summary['memory_used_mb']['avg'])} MB")
-              report.append(f"- Max memory used: {fmt(telemetry_summary['memory_used_mb']['max'])} MB")
-              report.append(f"- Avg power draw: {fmt(telemetry_summary['power_watts']['avg'])} W")
-              report.append(f"- Max power draw: {fmt(telemetry_summary['power_watts']['max'])} W")
-
+          report.append(f"- Samples: {len(gpu_utils)}")
+          report.append(f"- Avg GPU utilization: {fmt(avg(gpu_utils))}%")
+          report.append(f"- Max GPU utilization: {fmt(mx(gpu_utils))}%")
+          report.append(f"- Avg memory used: {fmt(avg(mem_used))} MB")
+          report.append(f"- Max memory used: {fmt(mx(mem_used))} MB")
+          report.append(f"- Avg power draw: {fmt(avg(power))} W")
+          report.append(f"- Max power draw: {fmt(mx(power))} W")
           report.append("")
-          report.append("## Interpretation for thesis direction")
+          report.append("## Vulkan diagnosis")
           report.append("")
-          report.append("This preliminary run supports the proposed thesis methodology:")
+          report.append(f"- NVIDIA visible to Vulkan: `{vulkan_visible}`")
+          report.append(f"- llvmpipe visible to Vulkan: `{vulkan_llvmpipe}`")
+          if vulkan_build_skipped:
+              report.append(f"- Vulkan build skipped reason: `{vulkan_build_skipped}`")
+          if vulkan_skipped:
+              report.append(f"- Vulkan run skipped reason: `{vulkan_skipped}`")
           report.append("")
-          report.append("- Component-style measurements expose phase-specific behavior.")
-          report.append("- Full-system measurements provide the end-to-end target.")
-          report.append("- Prediction error gives a concrete way to test whether components explain system behavior.")
-          report.append("- Telemetry gives supporting evidence about utilization and memory pressure.")
+          report.append("## Interpretation")
           report.append("")
-          report.append("The next step is to repeat the same structure across MLX, MLX-on-CUDA, SYCL, and optionally Vulkan if the toolchain exposes the NVIDIA GPU correctly.")
+          report.append("- CUDA is a valid baseline on this host.")
+          report.append("- If Vulkan sees only llvmpipe, it is not a valid NVIDIA Vulkan comparison.")
+          report.append("- If glslc is available from the Vulkan SDK but NVIDIA remains invisible to Vulkan, the remaining issue is driver/WSL Vulkan exposure rather than llama.cpp.")
+          report.append("- The thesis result should report this as a portability/reproducibility obstacle, not as Vulkan performance.")
+          report.append("")
+          report.append("## Next thesis step")
+          report.append("")
+          report.append("Repeat this exact schema for MLX, MLX-on-CUDA, and SYCL so that all backends produce comparable component-proxy and full-system measurements.")
           report.append("")
 
           (base / "MEETING_REPORT.md").write_text("\n".join(report))
-
           print("\n".join(report))
           PY
 
-      - name: Upload meeting demo artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: meeting-demo-component-to-full-system-results
+          name: ultra-verbose-cuda-vulkan-mlx-sycl-probe-results
           path: results/
