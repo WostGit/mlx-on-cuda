@@ -24,13 +24,15 @@ jobs:
           nvidia-smi | tee -a results/nvidia.txt
           nvcc --version | tee results/nvcc.txt || true
 
-          echo "=== Vulkan ===" | tee results/vulkaninfo.txt
-          vulkaninfo --summary | tee -a results/vulkaninfo.txt || true
+          echo "=== Vulkan ===" | tee results/vulkaninfo_initial.txt
+          vulkaninfo --summary | tee -a results/vulkaninfo_initial.txt || true
 
       - name: Install dependencies
         run: |
           set -euxo pipefail
+
           sudo apt-get update -y
+
           sudo apt-get install -y \
             git \
             cmake \
@@ -39,15 +41,33 @@ jobs:
             python3-pip \
             libvulkan-dev \
             vulkan-tools \
-            glslang-tools
+            glslang-tools \
+            spirv-tools
 
-          python3 -m pip install --user --upgrade huggingface_hub
+          sudo apt-get install -y glslc || true
+          sudo apt-get install -y shaderc || true
+
+          echo "=== Tool checks ==="
+          which cmake || true
+          cmake --version || true
+          which ninja || true
+          ninja --version || true
+          which vulkaninfo || true
+          vulkaninfo --summary || true
+          which glslc || true
+          glslc --version || true
+          which glslangValidator || true
+          glslangValidator --version || true
+
+          python3 -m pip install --user "huggingface_hub<1.0"
 
       - name: Clone llama.cpp
         run: |
           set -euxo pipefail
+
           rm -rf llama.cpp
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+
           cd llama.cpp
           git rev-parse HEAD | tee ../results/llama_commit.txt
           git log -1 --oneline | tee ../results/llama_commit_oneline.txt
@@ -55,6 +75,7 @@ jobs:
       - name: Download model
         run: |
           set -euxo pipefail
+
           cd llama.cpp
           mkdir -p models results
 
@@ -74,6 +95,7 @@ jobs:
       - name: Build CUDA llama-bench
         run: |
           set -euxo pipefail
+
           cd llama.cpp
 
           cmake -B build-cuda -G Ninja \
@@ -90,11 +112,23 @@ jobs:
       - name: Build Vulkan llama-bench
         run: |
           set -euxo pipefail
+
           cd llama.cpp
 
-          which glslc
-          glslc --version
-          vulkaninfo --summary || true
+          echo "=== Vulkan diagnostics before build ===" | tee ../results/vulkan_build_diagnostics.txt
+          which vulkaninfo | tee -a ../results/vulkan_build_diagnostics.txt || true
+          vulkaninfo --summary | tee -a ../results/vulkan_build_diagnostics.txt || true
+
+          echo "=== Shader compiler diagnostics ===" | tee -a ../results/vulkan_build_diagnostics.txt
+          which glslc | tee -a ../results/vulkan_build_diagnostics.txt || true
+          glslc --version | tee -a ../results/vulkan_build_diagnostics.txt || true
+          which glslangValidator | tee -a ../results/vulkan_build_diagnostics.txt || true
+          glslangValidator --version | tee -a ../results/vulkan_build_diagnostics.txt || true
+
+          if ! command -v glslc >/dev/null 2>&1; then
+            echo "glslc missing; skipping Vulkan build instead of failing workflow." | tee ../results/vulkan_skipped.txt
+            exit 0
+          fi
 
           cmake -B build-vulkan -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -109,6 +143,7 @@ jobs:
       - name: Run CUDA benchmark
         run: |
           set -euxo pipefail
+
           cd llama.cpp
 
           MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
@@ -125,11 +160,17 @@ jobs:
       - name: Run Vulkan benchmark
         run: |
           set -euxo pipefail
+
           cd llama.cpp
+
+          if [ ! -x build-vulkan/bin/llama-bench ]; then
+            echo "Vulkan binary missing; skipping Vulkan run." | tee ../results/vulkan_run_skipped.txt
+            exit 0
+          fi
 
           MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
-          vulkaninfo --summary || true
+          vulkaninfo --summary | tee ../results/vulkaninfo_run.txt || true
 
           ./build-vulkan/bin/llama-bench \
             -m "$MODEL" \
@@ -151,7 +192,16 @@ jobs:
 
           def load_rows(name):
               path = base / f"{name}.json"
-              data = json.loads(path.read_text())
+              if not path.exists():
+                  print(f"{name}: missing")
+                  return None
+              text = path.read_text(errors="replace").strip()
+              start = text.find("[")
+              if start == -1:
+                  start = text.find("{")
+              if start > 0:
+                  text = text[start:]
+              data = json.loads(text)
               return data if isinstance(data, list) else [data]
 
           def split_phases(rows):
@@ -163,20 +213,24 @@ jobs:
                       phases["decode"] = r
               return phases
 
-          summaries = {
-              "cuda": split_phases(load_rows("cuda")),
-              "vulkan": split_phases(load_rows("vulkan")),
-          }
-
+          summaries = {}
           rows_out = []
 
           print("=== RESULTS ===")
 
-          for backend, phases in summaries.items():
+          for backend in ["cuda", "vulkan"]:
+              rows = load_rows(backend)
+              if not rows:
+                  continue
+
+              phases = split_phases(rows)
+              summaries[backend] = phases
+
               print(f"\n{backend.upper()}")
               for phase in ["prefill", "decode"]:
                   r = phases.get(phase)
                   if not r:
+                      print(f"{phase}: missing")
                       continue
 
                   print(f"{phase}: {r.get('avg_ts')} tok/s")
@@ -199,29 +253,41 @@ jobs:
                       "test_time": r.get("test_time"),
                   })
 
-          print("\n=== PORTABILITY COST: Vulkan vs CUDA ===")
+          if "cuda" in summaries and "vulkan" in summaries:
+              print("\n=== PORTABILITY COST: Vulkan vs CUDA ===")
 
-          for phase in ["prefill", "decode"]:
-              c = summaries["cuda"].get(phase)
-              v = summaries["vulkan"].get(phase)
-              if not c or not v:
-                  continue
+              for phase in ["prefill", "decode"]:
+                  c = summaries["cuda"].get(phase)
+                  v = summaries["vulkan"].get(phase)
 
-              c_perf = c.get("avg_ts")
-              v_perf = v.get("avg_ts")
-              ratio = v_perf / c_perf
-              cost = 1.0 - ratio
+                  if not c or not v:
+                      continue
 
-              print(f"{phase}:")
-              print(f"  CUDA:        {c_perf:.3f} tok/s")
-              print(f"  Vulkan:      {v_perf:.3f} tok/s")
-              print(f"  Vulkan/CUDA: {ratio:.3f}x")
-              print(f"  Cost:        {cost * 100:.2f}%")
+                  c_perf = c.get("avg_ts")
+                  v_perf = v.get("avg_ts")
 
-          with (base / "summary.csv").open("w", newline="") as f:
-              writer = csv.DictWriter(f, fieldnames=list(rows_out[0].keys()))
-              writer.writeheader()
-              writer.writerows(rows_out)
+                  if not c_perf or not v_perf:
+                      continue
+
+                  ratio = v_perf / c_perf
+                  cost = 1.0 - ratio
+
+                  print(f"{phase}:")
+                  print(f"  CUDA:        {c_perf:.3f} tok/s")
+                  print(f"  Vulkan:      {v_perf:.3f} tok/s")
+                  print(f"  Vulkan/CUDA: {ratio:.3f}x")
+                  print(f"  Cost:        {cost * 100:.2f}%")
+          else:
+              print("\nVulkan or CUDA missing; portability cost not computed.")
+
+          if rows_out:
+              with (base / "summary.csv").open("w", newline="") as f:
+                  writer = csv.DictWriter(f, fieldnames=list(rows_out[0].keys()))
+                  writer.writeheader()
+                  writer.writerows(rows_out)
+              print("Saved results/summary.csv")
+          else:
+              print("No benchmark rows available.")
           PY
 
       - name: Upload benchmark results
