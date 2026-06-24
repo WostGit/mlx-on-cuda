@@ -1,128 +1,134 @@
-name: Full Smoke Test - CUDA MLX SYCL
+name: Coherent End-to-End Backend Demo
 
 on:
   workflow_dispatch:
 
 jobs:
-  smoke:
+  demo:
     runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Reset workspace
+        shell: bash
         run: |
           set -euxo pipefail
-          rm -rf results llama.cpp smoke
+          rm -rf results llama.cpp smoke vulkan-sdk
           mkdir -p results smoke
 
-      - name: System diagnostics
+      - name: Ultra verbose diagnostics
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "# Full Smoke Test Diagnostics" | tee results/00_system_diagnostics.md
-          echo "" | tee -a results/00_system_diagnostics.md
-          echo "## Date" | tee -a results/00_system_diagnostics.md
-          date | tee -a results/00_system_diagnostics.md
-          echo "" | tee -a results/00_system_diagnostics.md
+          {
+            echo "# Backend Demo Diagnostics"
+            echo
+            echo "## Date"
+            date
+            echo
+            echo "## Kernel"
+            uname -a || true
+            echo
+            echo "## OS"
+            lsb_release -a || true
+            echo
+            echo "## CPU"
+            lscpu || true
+            echo
+            echo "## CUDA"
+            nvidia-smi || true
+            which nvcc || true
+            nvcc --version || true
+            echo
+            echo "## Vulkan"
+            which vulkaninfo || true
+            vulkaninfo --summary || true
+            echo
+            echo "## glslc"
+            which glslc || true
+            glslc --version || true
+            echo
+            echo "## MLX"
+            python3 -c "import mlx.core as mx; print('MLX OK', mx.default_device())" || true
+            echo
+            echo "## SYCL"
+            source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+            which icpx || true
+            icpx --version || true
+            which sycl-ls || true
+            sycl-ls || true
+          } | tee results/00_diagnostics.md
 
-          echo "## Kernel" | tee -a results/00_system_diagnostics.md
-          uname -a | tee -a results/00_system_diagnostics.md || true
-          echo "" | tee -a results/00_system_diagnostics.md
-
-          echo "## OS" | tee -a results/00_system_diagnostics.md
-          lsb_release -a | tee -a results/00_system_diagnostics.md || true
-          sw_vers | tee -a results/00_system_diagnostics.md || true
-          echo "" | tee -a results/00_system_diagnostics.md
-
-          echo "## CPU" | tee -a results/00_system_diagnostics.md
-          lscpu | tee -a results/00_system_diagnostics.md || true
-          sysctl -n machdep.cpu.brand_string | tee -a results/00_system_diagnostics.md || true
-          echo "" | tee -a results/00_system_diagnostics.md
-
-          echo "## CUDA" | tee -a results/00_system_diagnostics.md
-          nvidia-smi | tee -a results/00_system_diagnostics.md || true
-          which nvcc | tee -a results/00_system_diagnostics.md || true
-          nvcc --version | tee -a results/00_system_diagnostics.md || true
-          echo "" | tee -a results/00_system_diagnostics.md
-
-          echo "## MLX" | tee -a results/00_system_diagnostics.md
-          cat > smoke/check_mlx.py <<'PY'
-          try:
-              import mlx.core as mx
-              print("MLX available")
-              print(mx.default_device())
-          except Exception as e:
-              print("MLX unavailable:", e)
-          PY
-          python3 smoke/check_mlx.py | tee -a results/00_system_diagnostics.md || true
-          echo "" | tee -a results/00_system_diagnostics.md
-
-          echo "## SYCL" | tee -a results/00_system_diagnostics.md
-          which icpx | tee -a results/00_system_diagnostics.md || true
-          icpx --version | tee -a results/00_system_diagnostics.md || true
-          which sycl-ls | tee -a results/00_system_diagnostics.md || true
-          sycl-ls | tee -a results/00_system_diagnostics.md || true
-
-      - name: Detect backends
+      - name: Detect backend availability
         shell: bash
         run: |
           set -euxo pipefail
 
           CUDA_AVAILABLE=0
+          VULKAN_AVAILABLE=0
           MLX_AVAILABLE=0
           SYCL_AVAILABLE=0
 
-          if command -v nvidia-smi >/dev/null 2>&1 && command -v nvcc >/dev/null 2>&1; then
-            if nvidia-smi >/dev/null 2>&1; then
-              CUDA_AVAILABLE=1
-            fi
+          if command -v nvidia-smi >/dev/null 2>&1 && command -v nvcc >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+            CUDA_AVAILABLE=1
           fi
 
-          cat > smoke/detect_mlx.py <<'PY'
-          try:
-              import mlx.core as mx
-              print("MLX import ok")
-          except Exception:
-              raise SystemExit(1)
-          PY
+          if command -v vulkaninfo >/dev/null 2>&1 && vulkaninfo --summary 2>&1 | grep -qi "NVIDIA\|Direct3D12"; then
+            VULKAN_AVAILABLE=1
+          fi
 
-          if python3 smoke/detect_mlx.py; then
+          if python3 -c "import mlx.core as mx; print(mx.default_device())" >/dev/null 2>&1; then
             MLX_AVAILABLE=1
           fi
 
+          source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
           if command -v icpx >/dev/null 2>&1; then
             SYCL_AVAILABLE=1
           fi
 
           {
             echo "CUDA_AVAILABLE=$CUDA_AVAILABLE"
+            echo "VULKAN_AVAILABLE=$VULKAN_AVAILABLE"
             echo "MLX_AVAILABLE=$MLX_AVAILABLE"
             echo "SYCL_AVAILABLE=$SYCL_AVAILABLE"
           } | tee results/backend_availability.env
 
-      - name: Install common Python dependency
+      - name: Install common dependencies
         shell: bash
         run: |
           set -euxo pipefail
+
+          sudo apt-get update -y || true
+          sudo apt-get install -y git cmake build-essential ninja-build python3-pip libvulkan-dev vulkan-tools glslang-tools spirv-tools || true
           python3 -m pip install --user "huggingface_hub<1.0" || true
 
-      - name: CUDA smoke test - llama.cpp
+      - name: Install Vulkan SDK glslc if missing
         shell: bash
         continue-on-error: true
         run: |
           set -euxo pipefail
 
-          source results/backend_availability.env
-
-          if [ "$CUDA_AVAILABLE" != "1" ]; then
-            echo "CUDA skipped: nvidia-smi or nvcc unavailable." | tee results/cuda_skipped.txt
+          if command -v glslc >/dev/null 2>&1; then
+            echo "glslc already available"
             exit 0
           fi
 
-          sudo apt-get update -y || true
-          sudo apt-get install -y git cmake build-essential ninja-build python3-pip || true
+          SDK_VERSION="1.3.296.0"
+          mkdir -p vulkan-sdk
+          cd vulkan-sdk
+          curl -L "https://sdk.lunarg.com/sdk/download/${SDK_VERSION}/linux/vulkansdk-linux-x86_64-${SDK_VERSION}.tar.xz" -o sdk.tar.xz
+          tar -xf sdk.tar.xz
+
+          echo "$GITHUB_WORKSPACE/vulkan-sdk/${SDK_VERSION}/x86_64/bin" >> "$GITHUB_PATH"
+          echo "VULKAN_SDK=$GITHUB_WORKSPACE/vulkan-sdk/${SDK_VERSION}/x86_64" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/vulkan-sdk/${SDK_VERSION}/x86_64/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Clone llama.cpp and download model
+        shell: bash
+        run: |
+          set -euxo pipefail
 
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
           cd llama.cpp
@@ -134,7 +140,6 @@ jobs:
 
           cat > ../smoke/download_model.py <<'PY'
           from huggingface_hub import hf_hub_download
-
           hf_hub_download(
               repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
               filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
@@ -143,8 +148,44 @@ jobs:
           PY
 
           python3 ../smoke/download_model.py
+          sha256sum models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/model_sha256.txt
+          ls -lh models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/model_file.txt
 
-          sha256sum models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/cuda_model_sha256.txt
+      - name: Start CUDA GPU telemetry
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+
+          if ! command -v nvidia-smi >/dev/null 2>&1; then
+            echo "No nvidia-smi; telemetry skipped" | tee results/telemetry_skipped.txt
+            exit 0
+          fi
+
+          (
+            while true; do
+              nvidia-smi \
+                --query-gpu=timestamp,name,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,temperature.gpu,clocks.sm,clocks.mem \
+                --format=csv,noheader,nounits
+              sleep 1
+            done
+          ) > results/gpu_telemetry_raw.csv &
+
+          echo $! > results/gpu_telemetry.pid
+
+      - name: Build CUDA llama.cpp backend
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          source results/backend_availability.env
+
+          if [ "$CUDA_AVAILABLE" != "1" ]; then
+            echo "CUDA skipped: unavailable" | tee results/cuda_skipped.txt
+            exit 0
+          fi
+
+          cd llama.cpp
 
           cmake -B build-cuda -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -158,37 +199,130 @@ jobs:
           cmake --build build-cuda --target llama-bench -j4 \
             2>&1 | tee ../results/cuda_build.log
 
-          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+      - name: Build Vulkan llama.cpp backend
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          source results/backend_availability.env
 
-          ./build-cuda/bin/llama-bench \
-            -m "$MODEL" \
-            -p 512 \
-            -n 128 \
-            -ngl 99 \
-            -o json | tee ../results/cuda_smoke_llama_bench.json
+          if [ "$VULKAN_AVAILABLE" != "1" ]; then
+            echo "Vulkan skipped: no NVIDIA or D3D12 Vulkan device visible" | tee results/vulkan_skipped.txt
+            exit 0
+          fi
 
-      - name: MLX smoke test
+          if ! command -v glslc >/dev/null 2>&1; then
+            echo "Vulkan skipped: glslc missing" | tee results/vulkan_skipped.txt
+            exit 0
+          fi
+
+          cd llama.cpp
+
+          cmake -B build-vulkan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_VULKAN=ON \
+            -DVulkan_GLSLC_EXECUTABLE="$(command -v glslc)" \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            2>&1 | tee ../results/vulkan_cmake.log
+
+          cmake --build build-vulkan --target llama-bench -j4 \
+            2>&1 | tee ../results/vulkan_build.log
+
+      - name: Build SYCL llama.cpp backend
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          source results/backend_availability.env
+
+          if [ "$SYCL_AVAILABLE" != "1" ]; then
+            echo "SYCL skipped: icpx unavailable" | tee results/sycl_skipped.txt
+            exit 0
+          fi
+
+          source /opt/intel/oneapi/setvars.sh >/dev/null
+
+          cd llama.cpp
+
+          cmake -B build-sycl -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_SYCL=ON \
+            -DCMAKE_C_COMPILER=icx \
+            -DCMAKE_CXX_COMPILER=icpx \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            2>&1 | tee ../results/sycl_cmake.log
+
+          cmake --build build-sycl --target llama-bench -j4 \
+            2>&1 | tee ../results/sycl_build.log
+
+      - name: Run CUDA end-to-end and component proxies
         shell: bash
         continue-on-error: true
         run: |
           set -euxo pipefail
 
-          source results/backend_availability.env
+          cd llama.cpp
+          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
-          python3 -m venv smoke/mlx-venv
-          source smoke/mlx-venv/bin/activate
-          python -m pip install --upgrade pip
-
-          if [ "$MLX_AVAILABLE" != "1" ]; then
-            echo "MLX not preinstalled; trying local venv install." | tee results/mlx_install_attempt.txt
+          if [ ! -x build-cuda/bin/llama-bench ]; then
+            echo "CUDA run skipped: binary missing" | tee ../results/cuda_run_skipped.txt
+            exit 0
           fi
 
-          python -m pip install mlx numpy || {
-            echo "MLX skipped: install failed or platform unsupported." | tee results/mlx_skipped.txt
-            exit 0
-          }
+          ./build-cuda/bin/llama-bench -m "$MODEL" -p 32 -n 512 -ngl 99 -o json | tee ../results/cuda_component_decode_proxy.json
+          ./build-cuda/bin/llama-bench -m "$MODEL" -p 4096 -n 0 -ngl 99 -o json | tee ../results/cuda_component_prefill_proxy.json
+          ./build-cuda/bin/llama-bench -m "$MODEL" -p 512 -n 512 -ngl 99 -o json | tee ../results/cuda_component_balanced_proxy.json
+          ./build-cuda/bin/llama-bench -m "$MODEL" -p 2048 -n 256 -ngl 99 -o json | tee ../results/cuda_full_system.json
 
-          cat > smoke/mlx_smoke.py <<'PY'
+      - name: Run Vulkan end-to-end
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+
+          cd llama.cpp
+          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+          if [ ! -x build-vulkan/bin/llama-bench ]; then
+            echo "Vulkan run skipped: binary missing" | tee ../results/vulkan_run_skipped.txt
+            exit 0
+          fi
+
+          vulkaninfo --summary | tee ../results/vulkan_runtime_device.txt || true
+
+          ./build-vulkan/bin/llama-bench -m "$MODEL" -p 2048 -n 256 -ngl 99 -o json | tee ../results/vulkan_full_system.json
+
+      - name: Run SYCL end-to-end
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+
+          source /opt/intel/oneapi/setvars.sh >/dev/null || true
+
+          cd llama.cpp
+          MODEL="models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+          if [ ! -x build-sycl/bin/llama-bench ]; then
+            echo "SYCL run skipped: binary missing" | tee ../results/sycl_run_skipped.txt
+            exit 0
+          fi
+
+          sycl-ls | tee ../results/sycl_runtime_devices.txt || true
+
+          ./build-sycl/bin/llama-bench -m "$MODEL" -p 2048 -n 256 -ngl 99 -o json | tee ../results/sycl_full_system.json
+
+      - name: Run MLX component-level smoke
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+
+          cat > smoke/mlx_component_demo.py <<'PY'
           import json
           import platform
           import time
@@ -203,8 +337,7 @@ jobs:
                   t0 = time.perf_counter()
                   y = fn()
                   mx.eval(y)
-                  t1 = time.perf_counter()
-                  times.append(t1 - t0)
+                  times.append(time.perf_counter() - t0)
               return {
                   "backend": "MLX",
                   "experiment": name,
@@ -212,134 +345,165 @@ jobs:
                   "min_ms": min(times) * 1000,
                   "max_ms": max(times) * 1000,
                   "iters": iters,
-                  "platform": platform.platform(),
                   "device": str(mx.default_device()),
+                  "platform": platform.platform(),
               }
-
-          mx.random.seed(0)
 
           A = mx.random.normal((2048, 2048), dtype=mx.float16)
           B = mx.random.normal((2048, 2048), dtype=mx.float16)
           x = mx.random.normal((2048,), dtype=mx.float16)
 
-          results = []
-          results.append(bench("gemm_2048_fp16", lambda: A @ B))
-          results.append(bench("gemv_2048_fp16", lambda: A @ x))
-
           Q = mx.random.normal((1, 8, 256, 64), dtype=mx.float16)
           K = mx.random.normal((1, 8, 256, 64), dtype=mx.float16)
           V = mx.random.normal((1, 8, 256, 64), dtype=mx.float16)
 
-          def attention_proxy():
+          def attn():
               S = Q @ mx.swapaxes(K, -1, -2)
               P = mx.softmax(S / 8.0, axis=-1)
               return P @ V
 
-          results.append(bench("attention_proxy_256", attention_proxy, warmup=2, iters=5))
+          results = [
+              bench("gemm_2048_fp16", lambda: A @ B),
+              bench("gemv_2048_fp16", lambda: A @ x),
+              bench("attention_proxy_256", attn, warmup=2, iters=5),
+          ]
 
           print(json.dumps(results, indent=2))
           PY
 
-          python smoke/mlx_smoke.py | tee results/mlx_smoke.json
+          python3 smoke/mlx_component_demo.py | tee results/mlx_component_demo.json
 
-      - name: SYCL smoke test
+      - name: Run SYCL component-level smoke
         shell: bash
         continue-on-error: true
         run: |
           set -euxo pipefail
 
-          source results/backend_availability.env
+          source /opt/intel/oneapi/setvars.sh >/dev/null || true
 
-          if [ "$SYCL_AVAILABLE" != "1" ]; then
-            echo "SYCL skipped: icpx unavailable. Install Intel oneAPI DPC++ on this runner." | tee results/sycl_skipped.txt
+          if ! command -v icpx >/dev/null 2>&1; then
+            echo "SYCL component skipped: icpx missing" | tee results/sycl_component_skipped.txt
             exit 0
           fi
 
-          cat > smoke/sycl_smoke.cpp <<'CPP'
+          cat > smoke/sycl_component_demo.cpp <<'CPP'
           #include <sycl/sycl.hpp>
           #include <chrono>
           #include <iostream>
           #include <vector>
-
           using namespace sycl;
 
           template <typename F>
-          double avg_ms(F&& f, int iters) {
+          double avg_ms(F fn, int iters) {
               auto t0 = std::chrono::high_resolution_clock::now();
-              for (int i = 0; i < iters; ++i) {
-                  f();
-              }
+              for (int i = 0; i < iters; ++i) fn();
               auto t1 = std::chrono::high_resolution_clock::now();
               return std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
           }
 
           int main() {
               queue q{default_selector_v};
-              auto dev = q.get_device();
+              auto d = q.get_device();
 
               constexpr int N = 512;
               constexpr int ITERS = 5;
 
-              std::vector<float> A(N*N, 1.0f);
-              std::vector<float> B(N*N, 1.0f);
-              std::vector<float> C(N*N, 0.0f);
+              std::vector<float> A(N*N, 1.0f), B(N*N, 1.0f), C(N*N, 0.0f), x(N, 1.0f), y(N, 0.0f);
 
               buffer<float, 2> a(A.data(), range<2>(N, N));
               buffer<float, 2> b(B.data(), range<2>(N, N));
               buffer<float, 2> c(C.data(), range<2>(N, N));
+              buffer<float, 1> bx(x.data(), range<1>(N));
+              buffer<float, 1> by(y.data(), range<1>(N));
 
               double gemm_ms = avg_ms([&]() {
                   q.submit([&](handler& h) {
                       accessor aa(a, h, read_only);
                       accessor bb(b, h, read_only);
                       accessor cc(c, h, write_only, no_init);
-
                       h.parallel_for(range<2>(N, N), [=](id<2> idx) {
-                          int i = idx[0];
-                          int j = idx[1];
-                          float sum = 0.0f;
-                          for (int k = 0; k < N; ++k) {
-                              sum += aa[i][k] * bb[k][j];
-                          }
-                          cc[i][j] = sum;
+                          int i = idx[0], j = idx[1];
+                          float s = 0.0f;
+                          for (int k = 0; k < N; ++k) s += aa[i][k] * bb[k][j];
+                          cc[i][j] = s;
                       });
                   }).wait();
               }, ITERS);
 
-              std::cout << "{\n";
-              std::cout << "  \"backend\": \"SYCL\",\n";
-              std::cout << "  \"experiment\": \"gemm_512_fp32\",\n";
-              std::cout << "  \"device\": \"" << dev.get_info<info::device::name>() << "\",\n";
-              std::cout << "  \"vendor\": \"" << dev.get_info<info::device::vendor>() << "\",\n";
-              std::cout << "  \"avg_ms\": " << gemm_ms << ",\n";
-              std::cout << "  \"iters\": " << ITERS << "\n";
-              std::cout << "}\n";
+              double gemv_ms = avg_ms([&]() {
+                  q.submit([&](handler& h) {
+                      accessor aa(a, h, read_only);
+                      accessor xx(bx, h, read_only);
+                      accessor yy(by, h, write_only, no_init);
+                      h.parallel_for(range<1>(N), [=](id<1> idx) {
+                          int i = idx[0];
+                          float s = 0.0f;
+                          for (int k = 0; k < N; ++k) s += aa[i][k] * xx[k];
+                          yy[i] = s;
+                      });
+                  }).wait();
+              }, ITERS);
+
+              std::cout << "[\n";
+              std::cout << "{\"backend\":\"SYCL\",\"experiment\":\"gemm_512_fp32\",\"avg_ms\":" << gemm_ms
+                        << ",\"device\":\"" << d.get_info<info::device::name>() << "\",\"vendor\":\""
+                        << d.get_info<info::device::vendor>() << "\"},\n";
+              std::cout << "{\"backend\":\"SYCL\",\"experiment\":\"gemv_512_fp32\",\"avg_ms\":" << gemv_ms
+                        << ",\"device\":\"" << d.get_info<info::device::name>() << "\",\"vendor\":\""
+                        << d.get_info<info::device::vendor>() << "\"}\n";
+              std::cout << "]\n";
               return 0;
           }
           CPP
 
-          icpx -fsycl -O3 smoke/sycl_smoke.cpp -o smoke/sycl_smoke
-          ./smoke/sycl_smoke | tee results/sycl_smoke.json
+          icpx -fsycl -O2 smoke/sycl_component_demo.cpp -o smoke/sycl_component_demo
+          timeout 60s smoke/sycl_component_demo | tee results/sycl_component_demo.json
 
-      - name: Generate smoke summary
-        shell: bash
+      - name: Stop telemetry
         if: always()
+        shell: bash
         run: |
           set -euxo pipefail
 
-          cat > smoke/generate_summary.py <<'PY'
+          if [ -f results/gpu_telemetry.pid ]; then
+            kill "$(cat results/gpu_telemetry.pid)" || true
+          fi
+
+          head -5 results/gpu_telemetry_raw.csv || true
+          tail -5 results/gpu_telemetry_raw.csv || true
+
+      - name: Generate narrative report
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cat > smoke/report.py <<'PY'
           import json
+          import csv
           from pathlib import Path
 
           base = Path("results")
 
-          def parse_json_file(path):
+          llama_files = {
+              "cuda_decode_proxy": "cuda_component_decode_proxy.json",
+              "cuda_prefill_proxy": "cuda_component_prefill_proxy.json",
+              "cuda_balanced_proxy": "cuda_component_balanced_proxy.json",
+              "cuda_full_system": "cuda_full_system.json",
+              "vulkan_full_system": "vulkan_full_system.json",
+              "sycl_full_system": "sycl_full_system.json",
+          }
+
+          component_files = {
+              "mlx_component": "mlx_component_demo.json",
+              "sycl_component": "sycl_component_demo.json",
+          }
+
+          def load_json(path):
               if not path.exists():
                   return None
               text = path.read_text(errors="replace").strip()
-              start = text.find("[")
-              if start == -1:
-                  start = text.find("{")
+              start = min([i for i in [text.find("["), text.find("{")] if i >= 0], default=-1)
               if start > 0:
                   text = text[start:]
               try:
@@ -347,65 +511,138 @@ jobs:
               except Exception as e:
                   return {"parse_error": str(e), "raw_tail": text[-1000:]}
 
-          cuda = parse_json_file(base / "cuda_smoke_llama_bench.json")
-          mlx = parse_json_file(base / "mlx_smoke.json")
-          sycl = parse_json_file(base / "sycl_smoke.json")
+          def rows_from(data):
+              if data is None:
+                  return []
+              return data if isinstance(data, list) else [data]
+
+          rows = []
+
+          def phase(r):
+              p = int(r.get("n_prompt", 0) or 0)
+              g = int(r.get("n_gen", 0) or 0)
+              if p > 0 and g == 0:
+                  return "prefill"
+              if p == 0 and g > 0:
+                  return "decode"
+              if p > 0 and g > 0:
+                  return "mixed"
+              return "component"
+
+          for exp, fname in llama_files.items():
+              for r in rows_from(load_json(base / fname)):
+                  if not isinstance(r, dict) or "parse_error" in r:
+                      continue
+                  rows.append({
+                      "experiment": exp,
+                      "backend": r.get("backends"),
+                      "phase": phase(r),
+                      "n_prompt": r.get("n_prompt"),
+                      "n_gen": r.get("n_gen"),
+                      "tokens_per_second": r.get("avg_ts"),
+                      "stddev_tokens_per_second": r.get("stddev_ts"),
+                      "device": r.get("gpu_info") or r.get("cpu_info"),
+                      "metric": "tok/s",
+                  })
+
+          for exp, fname in component_files.items():
+              for r in rows_from(load_json(base / fname)):
+                  if not isinstance(r, dict) or "parse_error" in r:
+                      continue
+                  rows.append({
+                      "experiment": r.get("experiment") or exp,
+                      "backend": r.get("backend") or exp,
+                      "phase": "component",
+                      "n_prompt": "",
+                      "n_gen": "",
+                      "tokens_per_second": "",
+                      "stddev_tokens_per_second": "",
+                      "device": r.get("device"),
+                      "metric": f"{r.get('avg_ms')} ms",
+                  })
+
+          if rows:
+              with (base / "summary.csv").open("w", newline="") as f:
+                  writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                  writer.writeheader()
+                  writer.writerows(rows)
+
+          telemetry = base / "gpu_telemetry_raw.csv"
+          gpu_util = []
+          power = []
+          mem = []
+          if telemetry.exists():
+              for line in telemetry.read_text(errors="replace").splitlines():
+                  parts = [x.strip() for x in line.split(",")]
+                  if len(parts) >= 10:
+                      try:
+                          gpu_util.append(float(parts[2]))
+                          mem.append(float(parts[4]))
+                          power.append(float(parts[6]))
+                      except Exception:
+                          pass
+
+          def avg(xs):
+              return sum(xs) / len(xs) if xs else None
+          def mx(xs):
+              return max(xs) if xs else None
+          def fmt(x):
+              if x is None or x == "":
+                  return "n/a"
+              try:
+                  return f"{float(x):,.2f}"
+              except Exception:
+                  return str(x)
 
           report = []
-          report.append("# Full Smoke Test Summary")
+          report.append("# Coherent End-to-End Backend Demo Report")
+          report.append("")
+          report.append("## Aim")
+          report.append("")
+          report.append("Demonstrate a thesis-shaped benchmarking workflow: component measurements, end-to-end inference, backend availability, and instrumentation.")
           report.append("")
           report.append("## Backend availability")
+          report.append("")
           if (base / "backend_availability.env").exists():
               report.append("```")
               report.append((base / "backend_availability.env").read_text(errors="replace").strip())
               report.append("```")
           report.append("")
-
-          report.append("## CUDA")
-          if cuda:
-              report.append("CUDA smoke result found.")
-              rows = cuda if isinstance(cuda, list) else [cuda]
-              for r in rows:
-                  if isinstance(r, dict):
-                      phase = "prefill" if r.get("n_prompt", 0) else "decode"
-                      report.append(f"- {phase}: {r.get('avg_ts')} tok/s on {r.get('gpu_info')}")
-          else:
-              report.append((base / "cuda_skipped.txt").read_text(errors="replace").strip() if (base / "cuda_skipped.txt").exists() else "CUDA result missing.")
+          report.append("## Results")
           report.append("")
-
-          report.append("## MLX")
-          if mlx:
-              rows = mlx if isinstance(mlx, list) else [mlx]
-              for r in rows:
-                  if isinstance(r, dict):
-                      report.append(f"- {r.get('experiment')}: {r.get('avg_ms')} ms on {r.get('device')}")
-          else:
-              report.append((base / "mlx_skipped.txt").read_text(errors="replace").strip() if (base / "mlx_skipped.txt").exists() else "MLX result missing.")
+          report.append("| Experiment | Backend | Phase | Prompt | Generated | Throughput | Other metric | Device |")
+          report.append("|---|---|---|---:|---:|---:|---:|---|")
+          for r in rows:
+              report.append(f"| {r['experiment']} | {r['backend']} | {r['phase']} | {r['n_prompt']} | {r['n_gen']} | {fmt(r['tokens_per_second'])} | {r['metric']} | {r['device']} |")
           report.append("")
-
-          report.append("## SYCL")
-          if sycl:
-              report.append(f"- {sycl.get('experiment')}: {sycl.get('avg_ms')} ms on {sycl.get('device')}")
-          else:
-              report.append((base / "sycl_skipped.txt").read_text(errors="replace").strip() if (base / "sycl_skipped.txt").exists() else "SYCL result missing.")
+          report.append("## Telemetry")
           report.append("")
-
+          report.append(f"- GPU telemetry samples: {len(gpu_util)}")
+          report.append(f"- Avg GPU utilization: {fmt(avg(gpu_util))}%")
+          report.append(f"- Max GPU utilization: {fmt(mx(gpu_util))}%")
+          report.append(f"- Avg memory used: {fmt(avg(mem))} MB")
+          report.append(f"- Max memory used: {fmt(mx(mem))} MB")
+          report.append(f"- Avg power draw: {fmt(avg(power))} W")
+          report.append(f"- Max power draw: {fmt(mx(power))} W")
+          report.append("")
           report.append("## Interpretation")
-          report.append("- CUDA validates the NVIDIA baseline.")
-          report.append("- MLX validates Apple Silicon/framework baseline when run on macOS Apple Silicon.")
-          report.append("- SYCL validates performance-portability tooling when oneAPI/DPC++ is installed.")
-          report.append("- This smoke test is for backend readiness, not final performance comparison.")
+          report.append("")
+          report.append("- CUDA provides the clean native RTX 4080 LLM inference baseline.")
+          report.append("- Vulkan, if present, should be interpreted as Vulkan-Dozen/D3D12 under WSL2 unless native Vulkan is confirmed.")
+          report.append("- SYCL currently targets the oneAPI/OpenCL CPU backend unless a GPU SYCL device appears in sycl-ls.")
+          report.append("- MLX is included as a component-level backend unless an MLX-on-CUDA end-to-end model runner exists.")
+          report.append("- Skipped sections are expected and are part of backend readiness reporting, not workflow failure.")
+          report.append("")
 
-          out = base / "SMOKE_SUMMARY.md"
-          out.write_text("\n".join(report))
-          print(out.read_text())
+          (base / "DEMO_REPORT.md").write_text("\n".join(report))
+          print("\n".join(report))
           PY
 
-          python3 smoke/generate_summary.py
+          python3 smoke/report.py
 
-      - name: Upload smoke artifacts
+      - name: Upload demo artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-smoke-cuda-mlx-sycl-results
+          name: coherent-end-to-end-backend-demo-results
           path: results/
