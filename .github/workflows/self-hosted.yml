@@ -21,43 +21,49 @@ jobs:
         run: |
           set -euxo pipefail
 
-          {
-            echo "# Full Smoke Test Diagnostics"
-            echo
-            echo "## Date"
-            date
-            echo
-            echo "## Kernel"
-            uname -a || true
-            echo
-            echo "## OS"
-            if command -v lsb_release >/dev/null 2>&1; then lsb_release -a || true; fi
-            if command -v sw_vers >/dev/null 2>&1; then sw_vers || true; fi
-            echo
-            echo "## CPU"
-            lscpu || sysctl -n machdep.cpu.brand_string || true
-            echo
-            echo "## CUDA"
-            nvidia-smi || true
-            which nvcc || true
-            nvcc --version || true
-            echo
-            echo "## MLX"
-            python3 - <<'PY' || true
-            try:
-                import mlx.core as mx
-                print("MLX available")
-                print(mx.default_device())
-            except Exception as e:
-                print("MLX unavailable:", e)
-            PY
-            echo
-            echo "## SYCL"
-            which icpx || true
-            icpx --version || true
-            which sycl-ls || true
-            sycl-ls || true
-          } | tee results/00_system_diagnostics.md
+          echo "# Full Smoke Test Diagnostics" | tee results/00_system_diagnostics.md
+          echo "" | tee -a results/00_system_diagnostics.md
+          echo "## Date" | tee -a results/00_system_diagnostics.md
+          date | tee -a results/00_system_diagnostics.md
+          echo "" | tee -a results/00_system_diagnostics.md
+
+          echo "## Kernel" | tee -a results/00_system_diagnostics.md
+          uname -a | tee -a results/00_system_diagnostics.md || true
+          echo "" | tee -a results/00_system_diagnostics.md
+
+          echo "## OS" | tee -a results/00_system_diagnostics.md
+          lsb_release -a | tee -a results/00_system_diagnostics.md || true
+          sw_vers | tee -a results/00_system_diagnostics.md || true
+          echo "" | tee -a results/00_system_diagnostics.md
+
+          echo "## CPU" | tee -a results/00_system_diagnostics.md
+          lscpu | tee -a results/00_system_diagnostics.md || true
+          sysctl -n machdep.cpu.brand_string | tee -a results/00_system_diagnostics.md || true
+          echo "" | tee -a results/00_system_diagnostics.md
+
+          echo "## CUDA" | tee -a results/00_system_diagnostics.md
+          nvidia-smi | tee -a results/00_system_diagnostics.md || true
+          which nvcc | tee -a results/00_system_diagnostics.md || true
+          nvcc --version | tee -a results/00_system_diagnostics.md || true
+          echo "" | tee -a results/00_system_diagnostics.md
+
+          echo "## MLX" | tee -a results/00_system_diagnostics.md
+          cat > smoke/check_mlx.py <<'PY'
+          try:
+              import mlx.core as mx
+              print("MLX available")
+              print(mx.default_device())
+          except Exception as e:
+              print("MLX unavailable:", e)
+          PY
+          python3 smoke/check_mlx.py | tee -a results/00_system_diagnostics.md || true
+          echo "" | tee -a results/00_system_diagnostics.md
+
+          echo "## SYCL" | tee -a results/00_system_diagnostics.md
+          which icpx | tee -a results/00_system_diagnostics.md || true
+          icpx --version | tee -a results/00_system_diagnostics.md || true
+          which sycl-ls | tee -a results/00_system_diagnostics.md || true
+          sycl-ls | tee -a results/00_system_diagnostics.md || true
 
       - name: Detect backends
         shell: bash
@@ -74,14 +80,15 @@ jobs:
             fi
           fi
 
-          if python3 - <<'PY'
+          cat > smoke/detect_mlx.py <<'PY'
           try:
               import mlx.core as mx
-              print("ok")
+              print("MLX import ok")
           except Exception:
               raise SystemExit(1)
           PY
-          then
+
+          if python3 smoke/detect_mlx.py; then
             MLX_AVAILABLE=1
           fi
 
@@ -125,14 +132,17 @@ jobs:
 
           mkdir -p models
 
-          python3 - <<'PY'
+          cat > ../smoke/download_model.py <<'PY'
           from huggingface_hub import hf_hub_download
+
           hf_hub_download(
               repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
               filename="qwen2.5-0.5b-instruct-q4_k_m.gguf",
               local_dir="models"
           )
           PY
+
+          python3 ../smoke/download_model.py
 
           sha256sum models/qwen2.5-0.5b-instruct-q4_k_m.gguf | tee ../results/cuda_model_sha256.txt
 
@@ -165,22 +175,18 @@ jobs:
 
           source results/backend_availability.env
 
+          python3 -m venv smoke/mlx-venv
+          source smoke/mlx-venv/bin/activate
+          python -m pip install --upgrade pip
+
           if [ "$MLX_AVAILABLE" != "1" ]; then
             echo "MLX not preinstalled; trying local venv install." | tee results/mlx_install_attempt.txt
-
-            python3 -m venv smoke/mlx-venv
-            source smoke/mlx-venv/bin/activate
-            python -m pip install --upgrade pip
-            python -m pip install mlx numpy || {
-              echo "MLX skipped: install failed or platform unsupported." | tee results/mlx_skipped.txt
-              exit 0
-            }
-          else
-            python3 -m venv smoke/mlx-venv
-            source smoke/mlx-venv/bin/activate
-            python -m pip install --upgrade pip
-            python -m pip install mlx numpy || true
           fi
+
+          python -m pip install mlx numpy || {
+            echo "MLX skipped: install failed or platform unsupported." | tee results/mlx_skipped.txt
+            exit 0
+          }
 
           cat > smoke/mlx_smoke.py <<'PY'
           import json
@@ -321,7 +327,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          python3 - <<'PY'
+          cat > smoke/generate_summary.py <<'PY'
           import json
           from pathlib import Path
 
@@ -394,6 +400,8 @@ jobs:
           out.write_text("\n".join(report))
           print(out.read_text())
           PY
+
+          python3 smoke/generate_summary.py
 
       - name: Upload smoke artifacts
         if: always()
