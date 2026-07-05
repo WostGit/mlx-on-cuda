@@ -1,431 +1,872 @@
-name: MLX CUDA inference research
+name: Backend slowdown instrumentation
 
 on:
   push:
     paths-ignore:
-      - "logs/mlx-cuda-inference/**"
-      - "experiments/run-pacz-main-i0-20260604.md"
+      - "results/**"
+      - "logs/**"
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
-  group: mlx-cuda-inference-${{ github.ref }}
+  group: backend-slowdown-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  experiment:
-    name: Run MLX CUDA inference experiment
+  instrument:
+    name: Instrument CUDA vs Vulkan slowdown
     runs-on: self-hosted
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     env:
-      LOG_DIR: logs/mlx-cuda-inference
-      MODEL_ID: mlx-community/Qwen2.5-0.5B-Instruct-4bit
-      PROMPT_LENGTHS: "128 512 2048 4096 8192"
-      OUTPUT_LENGTHS: "32 128 512"
-      REPEATS: "5"
+      MODEL: models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+      PROMPT_SHORT: "512"
+      PROMPT_LONG: "2048"
+      PROMPT_STRESS: "4096"
+      GEN_SHORT: "128"
+      GEN_LONG: "256"
+      GEN_STRESS: "512"
+      N_GPU_LAYERS: "99"
+      RESULTS_ROOT: results/backend-slowdown
+      LOG_ROOT: logs/backend-slowdown
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
+          fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Run MLX CUDA inference experiment, save results, and push them
+      - name: Prepare result directories
         shell: bash
         run: |
-          set -uo pipefail
+          set -euxo pipefail
 
           RUN_STAMP="$(date -u +'%Y%m%dT%H%M%SZ')"
-          RUN_DIR="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RUN_STAMP}"
-          LOG_FILE="${RUN_DIR}/run.log"
-          LATEST_DIR="${LOG_DIR}/latest"
+          RUN_DIR="${RESULTS_ROOT}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RUN_STAMP}"
+          LOG_DIR="${LOG_ROOT}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RUN_STAMP}"
 
-          mkdir -p "${RUN_DIR}"
+          mkdir -p "${RUN_DIR}" "${LOG_DIR}"
+
+          echo "RUN_DIR=${RUN_DIR}" >> "${GITHUB_ENV}"
+          echo "LOG_DIR=${LOG_DIR}" >> "${GITHUB_ENV}"
+
+          echo "Run directory: ${RUN_DIR}"
+          echo "Log directory: ${LOG_DIR}"
+
+      - name: Capture system baseline
+        shell: bash
+        run: |
+          set -euxo pipefail
 
           {
-            echo "MLX CUDA inference research experiment"
-            echo "======================================"
+            echo "Backend slowdown instrumentation"
+            echo "================================"
             echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Repository: ${GITHUB_REPOSITORY}"
             echo "Ref: ${GITHUB_REF}"
+            echo "Ref name: ${GITHUB_REF_NAME}"
             echo "SHA: ${GITHUB_SHA}"
             echo "Run ID: ${GITHUB_RUN_ID}"
             echo "Run attempt: ${GITHUB_RUN_ATTEMPT}"
             echo "Runner name: ${RUNNER_NAME:-unknown}"
             echo "Runner OS: ${RUNNER_OS:-unknown}"
             echo "Runner arch: ${RUNNER_ARCH:-unknown}"
-            echo "Model: ${MODEL_ID}"
-            echo "Prompt lengths: ${PROMPT_LENGTHS}"
-            echo "Output lengths: ${OUTPUT_LENGTHS}"
-            echo "Repeats: ${REPEATS}"
             echo
 
-            echo "--- System ---"
+            echo "--- uname ---"
             uname -a || true
+            echo
+
+            echo "--- lscpu ---"
             lscpu || true
+            echo
+
+            echo "--- memory ---"
             free -h || true
+            echo
+
+            echo "--- disk ---"
             df -h || true
             echo
 
-            echo "--- NVIDIA ---"
-            if command -v nvidia-smi >/dev/null 2>&1; then
-              nvidia-smi
-            else
-              echo "nvidia-smi not found"
-            fi
+            echo "--- environment hints ---"
+            env | sort | grep -E 'CUDA|VULKAN|VK_|LD_LIBRARY_PATH|PATH|WSL|MESA|NVIDIA|ONEAPI|SYCL' || true
             echo
 
-            echo "--- Python ---"
-            python --version
-            python -m pip --version
+            echo "--- git status ---"
+            git status --short || true
+            echo
+          } | tee "${RUN_DIR}/system_baseline.txt"
+
+      - name: Capture CUDA device diagnostics
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          {
+            echo "# CUDA / NVIDIA diagnostics"
             echo
 
-            echo "--- Install dependencies ---"
-            python -m pip install --upgrade pip
-            python -m pip install "mlx[cuda12]" mlx-lm numpy pandas pytest huggingface_hub
+            echo "--- command locations ---"
+            command -v nvidia-smi || true
+            command -v nvcc || true
+            command -v python3 || true
             echo
 
-            echo "--- MLX CUDA environment ---"
-            python - <<'PY'
-          import mlx.core as mx
+            echo "--- nvidia-smi full ---"
+            nvidia-smi || true
+            echo
 
-          print("MLX CUDA available:", mx.cuda.is_available())
-          print("MLX GPU device count:", mx.device_count(mx.gpu))
-          mx.set_default_device(mx.gpu)
-          print("MLX device info:", mx.device_info())
+            echo "--- nvidia-smi query static ---"
+            nvidia-smi \
+              --query-gpu=index,name,pci.bus_id,driver_version,cuda_version,compute_cap,memory.total,memory.used,power.limit,clocks.max.graphics,clocks.max.sm,clocks.max.memory \
+              --format=csv || true
+            echo
+
+            echo "--- nvidia-smi topology ---"
+            nvidia-smi topo -m || true
+            echo
+
+            echo "--- nvidia-smi supported clocks ---"
+            nvidia-smi -q -d SUPPORTED_CLOCKS || true
+            echo
+
+            echo "--- nvidia-smi compute apps ---"
+            nvidia-smi pmon -c 1 || true
+            echo
+          } | tee "${RUN_DIR}/cuda_device_diagnostics.txt"
+
+      - name: Capture Vulkan diagnostics
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          {
+            echo "# Vulkan diagnostics"
+            echo
+
+            echo "--- command locations ---"
+            command -v vulkaninfo || true
+            command -v glxinfo || true
+            command -v lspci || true
+            echo
+
+            echo "--- vulkaninfo summary ---"
+            vulkaninfo --summary || true
+            echo
+
+            echo "--- vulkaninfo full selected device/runtime lines ---"
+            vulkaninfo 2>&1 | grep -Ei \
+              'deviceName|driverName|driverInfo|driverID|apiVersion|vendorID|deviceID|deviceType|conformanceVersion|subgroup|warp|shader|memory|heap|queue|Dozen|D3D12|llvmpipe|NVIDIA|Mesa' \
+              || true
+            echo
+
+            echo "--- Vulkan ICD files ---"
+            find /usr/share/vulkan /etc/vulkan "$HOME/.local/share/vulkan" -maxdepth 4 -type f 2>/dev/null | sort || true
+            echo
+
+            echo "--- Vulkan environment ---"
+            env | sort | grep -E 'VK_|VULKAN|MESA|DXVK|DZN|LD_LIBRARY_PATH' || true
+            echo
+
+            echo "--- PCI devices ---"
+            lspci | grep -Ei 'vga|3d|display|nvidia' || true
+            echo
+          } | tee "${RUN_DIR}/vulkan_device_diagnostics.txt"
+
+      - name: Capture llama.cpp binary diagnostics
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          {
+            echo "# llama.cpp binary diagnostics"
+            echo
+
+            echo "--- repository root ---"
+            pwd
+            echo
+
+            echo "--- llama.cpp directory ---"
+            ls -la llama.cpp || true
+            echo
+
+            echo "--- model file ---"
+            ls -lh "llama.cpp/${MODEL}" || ls -lh "${MODEL}" || true
+            echo
+
+            echo "--- CUDA binaries ---"
+            find llama.cpp/build-cuda -maxdepth 3 -type f -executable 2>/dev/null | sort || true
+            echo
+
+            echo "--- Vulkan binaries ---"
+            find llama.cpp/build-vulkan -maxdepth 3 -type f -executable 2>/dev/null | sort || true
+            echo
+
+            echo "--- CUDA llama-bench linked libraries ---"
+            ldd llama.cpp/build-cuda/bin/llama-bench || true
+            echo
+
+            echo "--- Vulkan llama-bench linked libraries ---"
+            ldd llama.cpp/build-vulkan/bin/llama-bench || true
+            echo
+
+            echo "--- CUDA llama-bench help excerpt ---"
+            llama.cpp/build-cuda/bin/llama-bench --help 2>&1 | head -120 || true
+            echo
+
+            echo "--- Vulkan llama-bench help excerpt ---"
+            llama.cpp/build-vulkan/bin/llama-bench --help 2>&1 | head -120 || true
+            echo
+          } | tee "${RUN_DIR}/llama_binary_diagnostics.txt"
+
+      - name: Write instrumentation scripts
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p smoke
+
+          cat > smoke/run_with_telemetry.sh <<'SH'
+          #!/usr/bin/env bash
+          set -uo pipefail
+
+          label="$1"
+          out_json="$2"
+          out_log="$3"
+          shift 3
+
+          telemetry_file="${RUN_DIR}/${label}_nvidia_smi_telemetry.csv"
+          time_file="${RUN_DIR}/${label}_wall_time.txt"
+          command_file="${RUN_DIR}/${label}_command.txt"
+
+          printf '%q ' "$@" > "${command_file}"
+          echo >> "${command_file}"
+
+          echo "Starting telemetry for ${label}"
+          echo "timestamp,gpu_name,utilization_gpu_percent,utilization_memory_percent,memory_used_mib,memory_total_mib,power_draw_w,temperature_c,sm_clock_mhz,memory_clock_mhz" > "${telemetry_file}"
+
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            (
+              while true; do
+                nvidia-smi \
+                  --query-gpu=timestamp,name,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,temperature.gpu,clocks.sm,clocks.mem \
+                  --format=csv,noheader,nounits >> "${telemetry_file}" 2>/dev/null || true
+                sleep 0.2
+              done
+            ) &
+            telemetry_pid="$!"
+          else
+            telemetry_pid=""
+          fi
+
+          start_ns="$(date +%s%N)"
+
+          {
+            echo "Command label: ${label}"
+            echo "UTC start: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "Command:"
+            cat "${command_file}"
+            echo
+            "$@"
+          } 2>&1 | tee "${out_log}" | tee "${out_json}.raw"
+
+          cmd_status="${PIPESTATUS[0]}"
+          end_ns="$(date +%s%N)"
+
+          if [ -n "${telemetry_pid}" ]; then
+            kill "${telemetry_pid}" 2>/dev/null || true
+            wait "${telemetry_pid}" 2>/dev/null || true
+          fi
+
+          python3 - <<PY > "${time_file}"
+          start_ns = int("${start_ns}")
+          end_ns = int("${end_ns}")
+          print("label=${label}")
+          print("exit_code=${cmd_status}")
+          print("wall_seconds=" + str((end_ns - start_ns) / 1_000_000_000))
           PY
-            echo
 
-            echo "--- Write experiment script ---"
-            cat > "${RUN_DIR}/run_experiment.py" <<'PY'
+          python3 - <<PY
+          from pathlib import Path
+          raw = Path("${out_json}.raw").read_text(errors="replace")
+          start_candidates = [i for i in [raw.find("["), raw.find("{")] if i >= 0]
+          if start_candidates:
+              Path("${out_json}").write_text(raw[min(start_candidates):], encoding="utf-8")
+          else:
+              Path("${out_json}").write_text(raw, encoding="utf-8")
+          PY
+
+          exit "${cmd_status}"
+          SH
+
+          chmod +x smoke/run_with_telemetry.sh
+
+          cat > smoke/analyze_slowdown.py <<'PY'
           import csv
-          import gc
           import json
           import math
-          import os
-          import platform
-          import statistics
-          import subprocess
-          import sys
-          import time
+          import re
           from pathlib import Path
 
-          import mlx.core as mx
-          import numpy as np
-          import pandas as pd
-          from mlx_lm import generate, load
+          run_dir = Path(__import__("os").environ["RUN_DIR"])
 
-          run_dir = Path(os.environ["RUN_DIR"])
-          model_id = os.environ["MODEL_ID"]
-          prompt_lengths = [int(x) for x in os.environ["PROMPT_LENGTHS"].split()]
-          output_lengths = [int(x) for x in os.environ["OUTPUT_LENGTHS"].split()]
-          repeats = int(os.environ["REPEATS"])
-
-          raw_path = run_dir / "raw_results.jsonl"
-          summary_path = run_dir / "summary.csv"
-          prediction_path = run_dir / "prediction_errors.csv"
-          markdown_path = run_dir / "report.md"
-          env_path = run_dir / "environment.json"
-
-          def now():
-              return time.perf_counter()
-
-          def safe_sync():
+          def load_json(path):
+              if not path.exists():
+                  return None
+              text = path.read_text(errors="replace").strip()
+              starts = [i for i in [text.find("["), text.find("{")] if i >= 0]
+              if starts:
+                  text = text[min(starts):]
               try:
-                  mx.eval(mx.array([0]))
-                  mx.synchronize()
+                  return json.loads(text)
               except Exception:
-                  pass
+                  return None
 
-          def nvidia_smi_query():
-              try:
-                  out = subprocess.check_output(
-                      [
-                          "nvidia-smi",
-                          "--query-gpu=name,driver_version,memory.total,memory.used,temperature.gpu,power.draw",
-                          "--format=csv,noheader,nounits",
-                      ],
-                      text=True,
-                      stderr=subprocess.STDOUT,
-                  )
-                  return out.strip()
-              except Exception as exc:
-                  return f"nvidia-smi unavailable: {exc}"
+          def as_rows(data):
+              if data is None:
+                  return []
+              return data if isinstance(data, list) else [data]
 
-          def make_prompt(tokenizer, target_tokens):
-              base = (
-                  "Explain the main performance bottlenecks in local LLM inference. "
-                  "Discuss prefill, decode, KV cache growth, memory bandwidth, runtime overhead, "
-                  "quantization, and backend-specific implementation effects. "
-              )
-              text = base
-              while len(tokenizer.encode(text)) < target_tokens:
-                  text += base
-              ids = tokenizer.encode(text)[:target_tokens]
-              try:
-                  return tokenizer.decode(ids)
-              except Exception:
-                  return text
+          def phase(row):
+              p = int(row.get("n_prompt", 0) or 0)
+              g = int(row.get("n_gen", 0) or 0)
+              if p > 0 and g == 0:
+                  return "prefill"
+              if p == 0 and g > 0:
+                  return "decode"
+              if p > 0 and g > 0:
+                  return "mixed"
+              return "unknown"
 
-          def timed_generate(model, tokenizer, prompt, max_tokens):
-              safe_sync()
-              t0 = now()
-              text = generate(
-                  model,
-                  tokenizer,
-                  prompt=prompt,
-                  max_tokens=max_tokens,
-                  verbose=False,
-              )
-              safe_sync()
-              t1 = now()
+          def read_wall(label):
+              path = run_dir / f"{label}_wall_time.txt"
+              data = {}
+              if path.exists():
+                  for line in path.read_text(errors="replace").splitlines():
+                      if "=" in line:
+                          k, v = line.split("=", 1)
+                          data[k.strip()] = v.strip()
+              return data
 
-              prompt_tokens = len(tokenizer.encode(prompt))
-              output_tokens = max(0, len(tokenizer.encode(text)) - prompt_tokens)
+          def read_telemetry(label):
+              path = run_dir / f"{label}_nvidia_smi_telemetry.csv"
+              rows = []
+              if not path.exists():
+                  return {}
+              with path.open(errors="replace") as f:
+                  reader = csv.reader(f)
+                  header = next(reader, None)
+                  for row in reader:
+                      if len(row) < 10:
+                          continue
+                      try:
+                          rows.append({
+                              "gpu_util": float(row[2].strip()),
+                              "mem_util": float(row[3].strip()),
+                              "mem_used": float(row[4].strip()),
+                              "mem_total": float(row[5].strip()),
+                              "power": float(row[6].strip()),
+                              "temp": float(row[7].strip()),
+                              "sm_clock": float(row[8].strip()),
+                              "mem_clock": float(row[9].strip()),
+                          })
+                      except Exception:
+                          pass
+
+              def avg(xs):
+                  return sum(xs) / len(xs) if xs else None
+
+              def mx(xs):
+                  return max(xs) if xs else None
+
+              def pct_active(xs, threshold):
+                  if not xs:
+                      return None
+                  return sum(1 for x in xs if x >= threshold) / len(xs) * 100.0
 
               return {
-                  "seconds": t1 - t0,
-                  "prompt_tokens": prompt_tokens,
-                  "requested_output_tokens": max_tokens,
-                  "observed_output_tokens": output_tokens,
-                  "chars_out": len(text),
+                  "telemetry_samples": len(rows),
+                  "avg_gpu_util_percent": avg([r["gpu_util"] for r in rows]),
+                  "max_gpu_util_percent": mx([r["gpu_util"] for r in rows]),
+                  "pct_samples_gpu_util_ge_50": pct_active([r["gpu_util"] for r in rows], 50),
+                  "avg_mem_util_percent": avg([r["mem_util"] for r in rows]),
+                  "max_mem_util_percent": mx([r["mem_util"] for r in rows]),
+                  "avg_mem_used_mib": avg([r["mem_used"] for r in rows]),
+                  "max_mem_used_mib": mx([r["mem_used"] for r in rows]),
+                  "avg_power_w": avg([r["power"] for r in rows]),
+                  "max_power_w": mx([r["power"] for r in rows]),
+                  "avg_sm_clock_mhz": avg([r["sm_clock"] for r in rows]),
+                  "max_sm_clock_mhz": mx([r["sm_clock"] for r in rows]),
+                  "avg_mem_clock_mhz": avg([r["mem_clock"] for r in rows]),
+                  "max_mem_clock_mhz": mx([r["mem_clock"] for r in rows]),
               }
 
-          print("Loading model:", model_id)
-          load_t0 = now()
-          model, tokenizer = load(model_id)
-          safe_sync()
-          load_t1 = now()
-          print("Model loaded in seconds:", load_t1 - load_t0)
-
-          env = {
-              "model_id": model_id,
-              "python": sys.version,
-              "platform": platform.platform(),
-              "machine": platform.machine(),
-              "mlx_cuda_available": bool(mx.cuda.is_available()),
-              "mlx_gpu_device_count": int(mx.device_count(mx.gpu)),
-              "mlx_device_info": str(mx.device_info()),
-              "nvidia_smi": nvidia_smi_query(),
-              "prompt_lengths": prompt_lengths,
-              "output_lengths": output_lengths,
-              "repeats": repeats,
-              "model_load_seconds": load_t1 - load_t0,
-          }
-          env_path.write_text(json.dumps(env, indent=2), encoding="utf-8")
-
-          # Warmup
-          print("Warmup...")
-          warm_prompt = make_prompt(tokenizer, 128)
-          for _ in range(2):
-              timed_generate(model, tokenizer, warm_prompt, 8)
-          safe_sync()
+          experiments = [
+              ("cuda_prefill_512", "CUDA", "cuda_prefill_512.json"),
+              ("cuda_prefill_2048", "CUDA", "cuda_prefill_2048.json"),
+              ("cuda_prefill_4096", "CUDA", "cuda_prefill_4096.json"),
+              ("cuda_decode_128", "CUDA", "cuda_decode_128.json"),
+              ("cuda_decode_256", "CUDA", "cuda_decode_256.json"),
+              ("cuda_decode_512", "CUDA", "cuda_decode_512.json"),
+              ("vulkan_prefill_512", "Vulkan", "vulkan_prefill_512.json"),
+              ("vulkan_prefill_2048", "Vulkan", "vulkan_prefill_2048.json"),
+              ("vulkan_prefill_4096", "Vulkan", "vulkan_prefill_4096.json"),
+              ("vulkan_decode_128", "Vulkan", "vulkan_decode_128.json"),
+              ("vulkan_decode_256", "Vulkan", "vulkan_decode_256.json"),
+              ("vulkan_decode_512", "Vulkan", "vulkan_decode_512.json"),
+          ]
 
           rows = []
 
-          print("Running benchmark matrix...")
-          with raw_path.open("w", encoding="utf-8") as f:
-              for prompt_len in prompt_lengths:
-                  prompt = make_prompt(tokenizer, prompt_len)
+          for label, backend, fname in experiments:
+              data = load_json(run_dir / fname)
+              wall = read_wall(label)
+              telemetry = read_telemetry(label)
 
-                  for output_len in output_lengths:
-                      for repeat in range(repeats):
-                          gc.collect()
-                          safe_sync()
-
-                          result = timed_generate(model, tokenizer, prompt, output_len)
-
-                          total_tokens = result["prompt_tokens"] + max(result["observed_output_tokens"], result["requested_output_tokens"])
-                          observed_out = max(result["observed_output_tokens"], result["requested_output_tokens"])
-                          seconds = result["seconds"]
-
-                          row = {
-                              "kind": "end_to_end",
-                              "model_id": model_id,
-                              "prompt_len_target": prompt_len,
-                              "prompt_tokens": result["prompt_tokens"],
-                              "output_len_target": output_len,
-                              "observed_output_tokens": result["observed_output_tokens"],
-                              "effective_output_tokens": observed_out,
-                              "repeat": repeat,
-                              "seconds": seconds,
-                              "end_to_end_tokens_per_second": total_tokens / seconds if seconds > 0 else float("nan"),
-                              "decode_tokens_per_second_approx": observed_out / seconds if seconds > 0 else float("nan"),
-                              "utc_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                          }
-
-                          rows.append(row)
-                          f.write(json.dumps(row) + "\n")
-                          f.flush()
-
-                          print(
-                              "prompt=", prompt_len,
-                              "output=", output_len,
-                              "repeat=", repeat,
-                              "seconds=", round(seconds, 4),
-                              "approx_decode_tok_s=", round(row["decode_tokens_per_second_approx"], 2),
-                          )
-
-          df = pd.DataFrame(rows)
-
-          group_cols = ["prompt_len_target", "output_len_target"]
-          summary = (
-              df.groupby(group_cols)
-              .agg(
-                  runs=("seconds", "count"),
-                  mean_seconds=("seconds", "mean"),
-                  std_seconds=("seconds", "std"),
-                  median_seconds=("seconds", "median"),
-                  min_seconds=("seconds", "min"),
-                  max_seconds=("seconds", "max"),
-                  mean_end_to_end_tokens_per_second=("end_to_end_tokens_per_second", "mean"),
-                  mean_decode_tokens_per_second_approx=("decode_tokens_per_second_approx", "mean"),
-              )
-              .reset_index()
-          )
-
-          summary.to_csv(summary_path, index=False)
-
-          # Simple component-style model:
-          # T(prompt, output) ~= A(prompt) + B(prompt) * output
-          #
-          # For each prompt length, fit a line over output length.
-          # Then measure leave-one-output-length-out prediction error.
-          pred_rows = []
-
-          for prompt_len in prompt_lengths:
-              sub = summary[summary["prompt_len_target"] == prompt_len].copy()
-              if len(sub) < 2:
-                  continue
-
-              x_all = sub["output_len_target"].to_numpy(dtype=float)
-              y_all = sub["mean_seconds"].to_numpy(dtype=float)
-
-              for held_out_output in x_all:
-                  train = sub[sub["output_len_target"] != held_out_output]
-                  test = sub[sub["output_len_target"] == held_out_output]
-
-                  if len(train) < 2:
+              for r in as_rows(data):
+                  if not isinstance(r, dict):
                       continue
 
-                  x = train["output_len_target"].to_numpy(dtype=float)
-                  y = train["mean_seconds"].to_numpy(dtype=float)
+                  p = int(r.get("n_prompt", 0) or 0)
+                  g = int(r.get("n_gen", 0) or 0)
+                  avg_ns = float(r.get("avg_ns", "nan"))
+                  avg_ts = float(r.get("avg_ts", "nan"))
 
-                  slope, intercept = np.polyfit(x, y, deg=1)
+                  row = {
+                      "label": label,
+                      "backend": backend,
+                      "phase": phase(r),
+                      "n_prompt": p,
+                      "n_gen": g,
+                      "avg_ns": avg_ns,
+                      "avg_ms": avg_ns / 1e6 if not math.isnan(avg_ns) else "",
+                      "avg_seconds": avg_ns / 1e9 if not math.isnan(avg_ns) else "",
+                      "tokens_per_second": avg_ts,
+                      "stddev_tokens_per_second": r.get("stddev_ts", ""),
+                      "wall_seconds_process": wall.get("wall_seconds", ""),
+                      "exit_code": wall.get("exit_code", ""),
+                      "gpu_info": r.get("gpu_info", ""),
+                      "cpu_info": r.get("cpu_info", ""),
+                      "model_type": r.get("model_type", ""),
+                      "model_size": r.get("model_size", ""),
+                      "model_n_params": r.get("model_n_params", ""),
+                      "n_batch": r.get("n_batch", ""),
+                      "n_ubatch": r.get("n_ubatch", ""),
+                      "type_k": r.get("type_k", ""),
+                      "type_v": r.get("type_v", ""),
+                      "flash_attn": r.get("flash_attn", ""),
+                      "use_mmap": r.get("use_mmap", ""),
+                  }
+                  row.update(telemetry)
+                  rows.append(row)
 
-                  actual = float(test["mean_seconds"].iloc[0])
-                  predicted = float(intercept + slope * held_out_output)
-                  abs_error = abs(predicted - actual)
-                  pct_error = (abs_error / actual) * 100.0 if actual > 0 else float("nan")
+          summary_path = run_dir / "slowdown_summary.csv"
+          if rows:
+              fieldnames = list(rows[0].keys())
+              with summary_path.open("w", newline="", encoding="utf-8") as f:
+                  writer = csv.DictWriter(f, fieldnames=fieldnames)
+                  writer.writeheader()
+                  writer.writerows(rows)
 
-                  pred_rows.append(
-                      {
-                          "model": "per_prompt_linear_component_model",
-                          "prompt_len_target": prompt_len,
-                          "held_out_output_len": int(held_out_output),
-                          "intercept_prefill_runtime_proxy_seconds": intercept,
-                          "slope_decode_runtime_proxy_seconds_per_token": slope,
-                          "actual_seconds": actual,
-                          "predicted_seconds": predicted,
-                          "absolute_error_seconds": abs_error,
-                          "percent_error": pct_error,
-                      }
+          # CUDA vs Vulkan ratios by phase and token count.
+          ratio_rows = []
+          key = {}
+          for r in rows:
+              token_count = r["n_prompt"] if r["phase"] == "prefill" else r["n_gen"]
+              key[(r["backend"], r["phase"], token_count)] = r
+
+          for phase_name in ["prefill", "decode"]:
+              counts = sorted(set(k[2] for k in key if k[1] == phase_name))
+              for count in counts:
+                  c = key.get(("CUDA", phase_name, count))
+                  v = key.get(("Vulkan", phase_name, count))
+                  if not c or not v:
+                      continue
+                  c_ts = float(c["tokens_per_second"])
+                  v_ts = float(v["tokens_per_second"])
+                  c_s = float(c["avg_seconds"])
+                  v_s = float(v["avg_seconds"])
+                  ratio_rows.append({
+                      "phase": phase_name,
+                      "tokens": count,
+                      "cuda_tok_s": c_ts,
+                      "vulkan_tok_s": v_ts,
+                      "cuda_over_vulkan_speedup_tok_s": c_ts / v_ts if v_ts else "",
+                      "cuda_avg_seconds": c_s,
+                      "vulkan_avg_seconds": v_s,
+                      "vulkan_over_cuda_slowdown_time": v_s / c_s if c_s else "",
+                      "cuda_avg_gpu_util_percent": c.get("avg_gpu_util_percent", ""),
+                      "vulkan_avg_gpu_util_percent": v.get("avg_gpu_util_percent", ""),
+                      "cuda_avg_power_w": c.get("avg_power_w", ""),
+                      "vulkan_avg_power_w": v.get("avg_power_w", ""),
+                      "cuda_avg_mem_used_mib": c.get("avg_mem_used_mib", ""),
+                      "vulkan_avg_mem_used_mib": v.get("avg_mem_used_mib", ""),
+                  })
+
+          ratio_path = run_dir / "cuda_vs_vulkan_ratios.csv"
+          if ratio_rows:
+              with ratio_path.open("w", newline="", encoding="utf-8") as f:
+                  writer = csv.DictWriter(f, fieldnames=list(ratio_rows[0].keys()))
+                  writer.writeheader()
+                  writer.writerows(ratio_rows)
+
+          def fmt(x):
+              if x is None or x == "":
+                  return "n/a"
+              try:
+                  return f"{float(x):,.2f}"
+              except Exception:
+                  return str(x)
+
+          vulkan_diag = (run_dir / "vulkan_device_diagnostics.txt").read_text(errors="replace") if (run_dir / "vulkan_device_diagnostics.txt").exists() else ""
+          is_dozen = "Dozen" in vulkan_diag or "D3D12" in vulkan_diag
+          is_llvmpipe = "llvmpipe" in vulkan_diag
+
+          report = []
+          report.append("# Backend slowdown instrumentation report")
+          report.append("")
+          report.append("## Main question")
+          report.append("")
+          report.append("Why is the Vulkan backend slower than the CUDA backend on the same RTX 4080-class machine?")
+          report.append("")
+          report.append("## Important environment finding")
+          report.append("")
+          if is_dozen:
+              report.append("- Vulkan is running through Mesa Dozen / Direct3D12. This is not a clean native NVIDIA Vulkan stack.")
+          if is_llvmpipe:
+              report.append("- llvmpipe is also visible as a CPU Vulkan device. Ensure llama.cpp selects the discrete GPU device, not llvmpipe.")
+          if not is_dozen and not is_llvmpipe:
+              report.append("- No obvious Dozen/llvmpipe warning detected in the captured diagnostics.")
+          report.append("")
+          report.append("## CUDA vs Vulkan ratios")
+          report.append("")
+          if ratio_rows:
+              report.append("| Phase | Tokens | CUDA tok/s | Vulkan tok/s | CUDA speedup | CUDA sec | Vulkan sec | Vulkan time slowdown |")
+              report.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+              for r in ratio_rows:
+                  report.append(
+                      f"| {r['phase']} | {r['tokens']} | {fmt(r['cuda_tok_s'])} | {fmt(r['vulkan_tok_s'])} | "
+                      f"{fmt(r['cuda_over_vulkan_speedup_tok_s'])}x | {fmt(r['cuda_avg_seconds'])} | "
+                      f"{fmt(r['vulkan_avg_seconds'])} | {fmt(r['vulkan_over_cuda_slowdown_time'])}x |"
                   )
+          else:
+              report.append("No complete CUDA/Vulkan pairs were available for ratio calculation.")
+          report.append("")
+          report.append("## Telemetry interpretation")
+          report.append("")
+          report.append("Use `slowdown_summary.csv` to inspect whether the slower backend shows:")
+          report.append("")
+          report.append("- lower sustained GPU utilization, suggesting runtime overhead, synchronization, or inefficient dispatch;")
+          report.append("- lower power draw, suggesting the GPU is not being fully exercised;")
+          report.append("- similar memory usage but much lower throughput, suggesting backend/kernel inefficiency rather than capacity pressure;")
+          report.append("- different phase penalties for prefill and decode, suggesting backend-specific effects rather than a single hardware limit.")
+          report.append("")
+          report.append("## Research interpretation")
+          report.append("")
+          report.append("This run should be interpreted as a phase-specific backend slowdown study. If Vulkan-over-Dozen is much slower than CUDA while using the same physical RTX 4080, the result mainly measures the cost of the backend/runtime translation path and its kernel implementation, not a fundamental GPU capability difference.")
+          report.append("")
+          report.append("The key research point is whether the slowdown is uniform across phases. A larger prefill penalty than decode penalty means that backend abstractions affect LLM inference phases differently, which supports treating prefill and decode as separate performance regimes.")
+          report.append("")
+          report.append("## Generated files")
+          report.append("")
+          for p in sorted(run_dir.glob("*")):
+              report.append(f"- `{p.name}`")
+          report.append("")
 
-          pred_df = pd.DataFrame(pred_rows)
-          pred_df.to_csv(prediction_path, index=False)
+          (run_dir / "SLOWDOWN_REPORT.md").write_text("\n".join(report), encoding="utf-8")
 
-          # Markdown report
-          with markdown_path.open("w", encoding="utf-8") as md:
-              md.write("# MLX CUDA inference research report\n\n")
-              md.write(f"- Model: `{model_id}`\n")
-              md.write(f"- Prompt lengths: `{prompt_lengths}`\n")
-              md.write(f"- Output lengths: `{output_lengths}`\n")
-              md.write(f"- Repeats: `{repeats}`\n")
-              md.write(f"- Model load seconds: `{load_t1 - load_t0:.4f}`\n")
-              md.write(f"- MLX CUDA available: `{mx.cuda.is_available()}`\n")
-              md.write(f"- MLX GPU device count: `{mx.device_count(mx.gpu)}`\n\n")
-
-              md.write("## Summary\n\n")
-              md.write(summary.to_markdown(index=False))
-              md.write("\n\n")
-
-              md.write("## Component-model prediction errors\n\n")
-              if len(pred_df) > 0:
-                  md.write(pred_df.to_markdown(index=False))
-                  md.write("\n\n")
-                  md.write("## Aggregate prediction error\n\n")
-                  md.write(f"- Mean percent error: `{pred_df['percent_error'].mean():.2f}%`\n")
-                  md.write(f"- Median percent error: `{pred_df['percent_error'].median():.2f}%`\n")
-                  md.write(f"- Max percent error: `{pred_df['percent_error'].max():.2f}%`\n")
-              else:
-                  md.write("Not enough data to fit prediction model.\n")
-
-          print("Wrote:")
-          print(raw_path)
-          print(summary_path)
-          print(prediction_path)
-          print(markdown_path)
-          print(env_path)
+          print("\n".join(report))
           PY
 
-            echo "--- Run experiment ---"
-            export RUN_DIR="${RUN_DIR}"
-            python "${RUN_DIR}/run_experiment.py"
+      - name: Run CUDA instrumented phase benchmarks
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-            echo
-            echo "--- Result files ---"
-            find "${RUN_DIR}" -maxdepth 1 -type f -print -exec ls -lh {} \;
-            echo
+          cd llama.cpp
 
-            echo "--- Report preview ---"
-            sed -n '1,220p' "${RUN_DIR}/report.md"
-          } 2>&1 | tee "${LOG_FILE}"
+          if [ ! -x build-cuda/bin/llama-bench ]; then
+            echo "Missing CUDA llama-bench binary: build-cuda/bin/llama-bench"
+            exit 1
+          fi
 
-          experiment_status=${PIPESTATUS[0]}
+          if [ ! -f "${MODEL}" ]; then
+            echo "Missing model: ${MODEL}"
+            exit 1
+          fi
 
-          {
-            echo
-            echo "--- Final experiment status ---"
-            echo "Experiment exit code: ${experiment_status}"
-            echo "Run directory: ${RUN_DIR}"
-            echo "Log file: ${LOG_FILE}"
-          } | tee -a "${LOG_FILE}"
+          cd ..
 
-          echo "--- Update latest directory ---" | tee -a "${LOG_FILE}"
+          smoke/run_with_telemetry.sh \
+            cuda_prefill_512 \
+            "${RUN_DIR}/cuda_prefill_512.json" \
+            "${RUN_DIR}/cuda_prefill_512.log" \
+            llama.cpp/build-cuda/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p "${PROMPT_SHORT}" \
+            -n 0 \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            cuda_prefill_2048 \
+            "${RUN_DIR}/cuda_prefill_2048.json" \
+            "${RUN_DIR}/cuda_prefill_2048.log" \
+            llama.cpp/build-cuda/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p "${PROMPT_LONG}" \
+            -n 0 \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            cuda_prefill_4096 \
+            "${RUN_DIR}/cuda_prefill_4096.json" \
+            "${RUN_DIR}/cuda_prefill_4096.log" \
+            llama.cpp/build-cuda/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p "${PROMPT_STRESS}" \
+            -n 0 \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            cuda_decode_128 \
+            "${RUN_DIR}/cuda_decode_128.json" \
+            "${RUN_DIR}/cuda_decode_128.log" \
+            llama.cpp/build-cuda/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p 0 \
+            -n "${GEN_SHORT}" \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            cuda_decode_256 \
+            "${RUN_DIR}/cuda_decode_256.json" \
+            "${RUN_DIR}/cuda_decode_256.log" \
+            llama.cpp/build-cuda/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p 0 \
+            -n "${GEN_LONG}" \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            cuda_decode_512 \
+            "${RUN_DIR}/cuda_decode_512.json" \
+            "${RUN_DIR}/cuda_decode_512.log" \
+            llama.cpp/build-cuda/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p 0 \
+            -n "${GEN_STRESS}" \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+      - name: Run Vulkan instrumented phase benchmarks
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd llama.cpp
+
+          if [ ! -x build-vulkan/bin/llama-bench ]; then
+            echo "Missing Vulkan llama-bench binary: build-vulkan/bin/llama-bench"
+            exit 1
+          fi
+
+          if [ ! -f "${MODEL}" ]; then
+            echo "Missing model: ${MODEL}"
+            exit 1
+          fi
+
+          cd ..
+
+          smoke/run_with_telemetry.sh \
+            vulkan_prefill_512 \
+            "${RUN_DIR}/vulkan_prefill_512.json" \
+            "${RUN_DIR}/vulkan_prefill_512.log" \
+            llama.cpp/build-vulkan/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p "${PROMPT_SHORT}" \
+            -n 0 \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            vulkan_prefill_2048 \
+            "${RUN_DIR}/vulkan_prefill_2048.json" \
+            "${RUN_DIR}/vulkan_prefill_2048.log" \
+            llama.cpp/build-vulkan/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p "${PROMPT_LONG}" \
+            -n 0 \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            vulkan_prefill_4096 \
+            "${RUN_DIR}/vulkan_prefill_4096.json" \
+            "${RUN_DIR}/vulkan_prefill_4096.log" \
+            llama.cpp/build-vulkan/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p "${PROMPT_STRESS}" \
+            -n 0 \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            vulkan_decode_128 \
+            "${RUN_DIR}/vulkan_decode_128.json" \
+            "${RUN_DIR}/vulkan_decode_128.log" \
+            llama.cpp/build-vulkan/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p 0 \
+            -n "${GEN_SHORT}" \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            vulkan_decode_256 \
+            "${RUN_DIR}/vulkan_decode_256.json" \
+            "${RUN_DIR}/vulkan_decode_256.log" \
+            llama.cpp/build-vulkan/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p 0 \
+            -n "${GEN_LONG}" \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+          smoke/run_with_telemetry.sh \
+            vulkan_decode_512 \
+            "${RUN_DIR}/vulkan_decode_512.json" \
+            "${RUN_DIR}/vulkan_decode_512.log" \
+            llama.cpp/build-vulkan/bin/llama-bench \
+            -m "llama.cpp/${MODEL}" \
+            -p 0 \
+            -n "${GEN_STRESS}" \
+            -ngl "${N_GPU_LAYERS}" \
+            -o json
+
+      - name: Optional true wall-clock end-to-end CUDA and Vulkan runs
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cat > smoke/make_prompt.py <<'PY'
+          import argparse
+
+          parser = argparse.ArgumentParser()
+          parser.add_argument("--tokens", type=int, required=True)
+          args = parser.parse_args()
+
+          base = (
+              "Explain why local LLM inference performance differs across CUDA and Vulkan backends. "
+              "Discuss prefill, decode, memory bandwidth, KV cache, runtime overhead, shader compilation, "
+              "kernel dispatch, synchronization, quantization, and backend-specific implementation details. "
+          )
+
+          # Approximate token count. llama.cpp tokenization will differ, but this is enough for wall-clock stress.
+          words = base.split()
+          out = []
+          while len(out) < args.tokens:
+              out.extend(words)
+          print(" ".join(out[:args.tokens]))
+          PY
+
+          PROMPT_FILE="${RUN_DIR}/prompt_${PROMPT_LONG}_approx_tokens.txt"
+          python3 smoke/make_prompt.py --tokens "${PROMPT_LONG}" > "${PROMPT_FILE}"
+
+          if [ -x llama.cpp/build-cuda/bin/llama-cli ]; then
+            smoke/run_with_telemetry.sh \
+              cuda_true_e2e_2048_256 \
+              "${RUN_DIR}/cuda_true_e2e_2048_256.json" \
+              "${RUN_DIR}/cuda_true_e2e_2048_256.log" \
+              bash -lc "cat '${PROMPT_FILE}' | llama.cpp/build-cuda/bin/llama-cli -m 'llama.cpp/${MODEL}' -f /dev/stdin -n '${GEN_LONG}' -ngl '${N_GPU_LAYERS}' --no-display-prompt"
+          else
+            echo "CUDA llama-cli missing; skipping true e2e CUDA." | tee "${RUN_DIR}/cuda_true_e2e_skipped.txt"
+          fi
+
+          if [ -x llama.cpp/build-vulkan/bin/llama-cli ]; then
+            smoke/run_with_telemetry.sh \
+              vulkan_true_e2e_2048_256 \
+              "${RUN_DIR}/vulkan_true_e2e_2048_256.json" \
+              "${RUN_DIR}/vulkan_true_e2e_2048_256.log" \
+              bash -lc "cat '${PROMPT_FILE}' | llama.cpp/build-vulkan/bin/llama-cli -m 'llama.cpp/${MODEL}' -f /dev/stdin -n '${GEN_LONG}' -ngl '${N_GPU_LAYERS}' --no-display-prompt"
+          else
+            echo "Vulkan llama-cli missing; skipping true e2e Vulkan." | tee "${RUN_DIR}/vulkan_true_e2e_skipped.txt"
+          fi
+
+      - name: Analyze slowdown and generate report
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          python3 smoke/analyze_slowdown.py
+
+          echo "--- Generated report preview ---"
+          sed -n '1,260p' "${RUN_DIR}/SLOWDOWN_REPORT.md"
+
+          echo "--- Generated CSV files ---"
+          find "${RUN_DIR}" -maxdepth 1 -name '*.csv' -print -exec head -20 {} \;
+
+      - name: Update latest result pointer
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          LATEST_DIR="${RESULTS_ROOT}/latest"
           rm -rf "${LATEST_DIR}"
           mkdir -p "${LATEST_DIR}"
+
           cp -a "${RUN_DIR}/." "${LATEST_DIR}/"
 
-          echo "--- Commit and push results ---" | tee -a "${LOG_FILE}"
-          git status --short | tee -a "${LOG_FILE}"
+          echo "${RUN_DIR}" > "${RESULTS_ROOT}/LATEST_RUN.txt"
+
+          echo "--- latest contents ---"
+          find "${LATEST_DIR}" -maxdepth 1 -type f -print | sort
+
+      - name: Commit and push results back to repository
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "--- Git status before adding ---"
+          git status --short
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${LOG_DIR}"
+
+          git add "${RESULTS_ROOT}" "${LOG_ROOT}" smoke || true
+
+          echo "--- Git status after adding ---"
+          git status --short
 
           if git diff --cached --quiet; then
-            echo "No result changes to commit." | tee -a "${LOG_FILE}"
-            push_status=0
-          else
-            git commit -m "Add MLX CUDA inference results for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
-            git push 2>&1 | tee -a "${LOG_FILE}"
-            push_status=${PIPESTATUS[0]}
+            echo "No result changes to commit."
+            exit 0
           fi
 
-          echo "Experiment exit code: ${experiment_status}"
-          echo "Git push exit code: ${push_status}"
+          git commit -m "Add backend slowdown instrumentation for run ${GITHUB_RUN_ID}"
 
-          if [ "${experiment_status}" -ne 0 ]; then
-            exit "${experiment_status}"
-          fi
+          # Handle concurrent result pushes more robustly.
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
 
-          exit "${push_status}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload result artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-slowdown-instrumentation-results
+          path: |
+            results/backend-slowdown/
+            logs/backend-slowdown/
+            smoke/
+          if-no-files-found: error
