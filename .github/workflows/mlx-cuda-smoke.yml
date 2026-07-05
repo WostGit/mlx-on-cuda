@@ -1,9 +1,9 @@
-name: MLX CUDA smoke
+name: MLX CUDA inference research
 
 on:
   push:
     paths-ignore:
-      - "logs/mlx-cuda-smoke/**"
+      - "logs/mlx-cuda-inference/**"
       - "experiments/run-pacz-main-i0-20260604.md"
   pull_request:
   workflow_dispatch:
@@ -11,11 +11,22 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: mlx-cuda-inference-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  smoke:
-    name: Run MLX CUDA smoke test
+  experiment:
+    name: Run MLX CUDA inference experiment
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 120
+
+    env:
+      LOG_DIR: logs/mlx-cuda-inference
+      MODEL_ID: mlx-community/Qwen2.5-0.5B-Instruct-4bit
+      PROMPT_LENGTHS: "128 512 2048 4096 8192"
+      OUTPUT_LENGTHS: "32 128 512"
+      REPEATS: "5"
 
     steps:
       - name: Check out repository
@@ -28,19 +39,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run smoke test, save logs, and push them
+      - name: Run MLX CUDA inference experiment, save results, and push them
         shell: bash
         run: |
           set -uo pipefail
 
-          LOG_DIR="logs/mlx-cuda-smoke"
-          LOG_FILE="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          LATEST_LOG="${LOG_DIR}/latest.log"
-          mkdir -p "${LOG_DIR}"
+          RUN_STAMP="$(date -u +'%Y%m%dT%H%M%SZ')"
+          RUN_DIR="${LOG_DIR}/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RUN_STAMP}"
+          LOG_FILE="${RUN_DIR}/run.log"
+          LATEST_DIR="${LOG_DIR}/latest"
+
+          mkdir -p "${RUN_DIR}"
 
           {
-            echo "MLX CUDA smoke test"
-            echo "==================="
+            echo "MLX CUDA inference research experiment"
+            echo "======================================"
             echo "UTC time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "Repository: ${GITHUB_REPOSITORY}"
             echo "Ref: ${GITHUB_REF}"
@@ -50,15 +63,25 @@ jobs:
             echo "Runner name: ${RUNNER_NAME:-unknown}"
             echo "Runner OS: ${RUNNER_OS:-unknown}"
             echo "Runner arch: ${RUNNER_ARCH:-unknown}"
+            echo "Model: ${MODEL_ID}"
+            echo "Prompt lengths: ${PROMPT_LENGTHS}"
+            echo "Output lengths: ${OUTPUT_LENGTHS}"
+            echo "Repeats: ${REPEATS}"
             echo
 
             echo "--- System ---"
-            uname -a
+            uname -a || true
+            lscpu || true
+            free -h || true
+            df -h || true
             echo
 
             echo "--- NVIDIA ---"
-            command -v nvidia-smi
-            nvidia-smi
+            if command -v nvidia-smi >/dev/null 2>&1; then
+              nvidia-smi
+            else
+              echo "nvidia-smi not found"
+            fi
             echo
 
             echo "--- Python ---"
@@ -68,7 +91,7 @@ jobs:
 
             echo "--- Install dependencies ---"
             python -m pip install --upgrade pip
-            python -m pip install "mlx[cuda12]" pytest numpy
+            python -m pip install "mlx[cuda12]" mlx-lm numpy pandas pytest huggingface_hub
             echo
 
             echo "--- MLX CUDA environment ---"
@@ -82,40 +105,327 @@ jobs:
           PY
             echo
 
-            echo "--- Pytest ---"
-            python -m pytest -q tests/test_mlx_cuda_smoke.py
+            echo "--- Write experiment script ---"
+            cat > "${RUN_DIR}/run_experiment.py" <<'PY'
+          import csv
+          import gc
+          import json
+          import math
+          import os
+          import platform
+          import statistics
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+
+          import mlx.core as mx
+          import numpy as np
+          import pandas as pd
+          from mlx_lm import generate, load
+
+          run_dir = Path(os.environ["RUN_DIR"])
+          model_id = os.environ["MODEL_ID"]
+          prompt_lengths = [int(x) for x in os.environ["PROMPT_LENGTHS"].split()]
+          output_lengths = [int(x) for x in os.environ["OUTPUT_LENGTHS"].split()]
+          repeats = int(os.environ["REPEATS"])
+
+          raw_path = run_dir / "raw_results.jsonl"
+          summary_path = run_dir / "summary.csv"
+          prediction_path = run_dir / "prediction_errors.csv"
+          markdown_path = run_dir / "report.md"
+          env_path = run_dir / "environment.json"
+
+          def now():
+              return time.perf_counter()
+
+          def safe_sync():
+              try:
+                  mx.eval(mx.array([0]))
+                  mx.synchronize()
+              except Exception:
+                  pass
+
+          def nvidia_smi_query():
+              try:
+                  out = subprocess.check_output(
+                      [
+                          "nvidia-smi",
+                          "--query-gpu=name,driver_version,memory.total,memory.used,temperature.gpu,power.draw",
+                          "--format=csv,noheader,nounits",
+                      ],
+                      text=True,
+                      stderr=subprocess.STDOUT,
+                  )
+                  return out.strip()
+              except Exception as exc:
+                  return f"nvidia-smi unavailable: {exc}"
+
+          def make_prompt(tokenizer, target_tokens):
+              base = (
+                  "Explain the main performance bottlenecks in local LLM inference. "
+                  "Discuss prefill, decode, KV cache growth, memory bandwidth, runtime overhead, "
+                  "quantization, and backend-specific implementation effects. "
+              )
+              text = base
+              while len(tokenizer.encode(text)) < target_tokens:
+                  text += base
+              ids = tokenizer.encode(text)[:target_tokens]
+              try:
+                  return tokenizer.decode(ids)
+              except Exception:
+                  return text
+
+          def timed_generate(model, tokenizer, prompt, max_tokens):
+              safe_sync()
+              t0 = now()
+              text = generate(
+                  model,
+                  tokenizer,
+                  prompt=prompt,
+                  max_tokens=max_tokens,
+                  verbose=False,
+              )
+              safe_sync()
+              t1 = now()
+
+              prompt_tokens = len(tokenizer.encode(prompt))
+              output_tokens = max(0, len(tokenizer.encode(text)) - prompt_tokens)
+
+              return {
+                  "seconds": t1 - t0,
+                  "prompt_tokens": prompt_tokens,
+                  "requested_output_tokens": max_tokens,
+                  "observed_output_tokens": output_tokens,
+                  "chars_out": len(text),
+              }
+
+          print("Loading model:", model_id)
+          load_t0 = now()
+          model, tokenizer = load(model_id)
+          safe_sync()
+          load_t1 = now()
+          print("Model loaded in seconds:", load_t1 - load_t0)
+
+          env = {
+              "model_id": model_id,
+              "python": sys.version,
+              "platform": platform.platform(),
+              "machine": platform.machine(),
+              "mlx_cuda_available": bool(mx.cuda.is_available()),
+              "mlx_gpu_device_count": int(mx.device_count(mx.gpu)),
+              "mlx_device_info": str(mx.device_info()),
+              "nvidia_smi": nvidia_smi_query(),
+              "prompt_lengths": prompt_lengths,
+              "output_lengths": output_lengths,
+              "repeats": repeats,
+              "model_load_seconds": load_t1 - load_t0,
+          }
+          env_path.write_text(json.dumps(env, indent=2), encoding="utf-8")
+
+          # Warmup
+          print("Warmup...")
+          warm_prompt = make_prompt(tokenizer, 128)
+          for _ in range(2):
+              timed_generate(model, tokenizer, warm_prompt, 8)
+          safe_sync()
+
+          rows = []
+
+          print("Running benchmark matrix...")
+          with raw_path.open("w", encoding="utf-8") as f:
+              for prompt_len in prompt_lengths:
+                  prompt = make_prompt(tokenizer, prompt_len)
+
+                  for output_len in output_lengths:
+                      for repeat in range(repeats):
+                          gc.collect()
+                          safe_sync()
+
+                          result = timed_generate(model, tokenizer, prompt, output_len)
+
+                          total_tokens = result["prompt_tokens"] + max(result["observed_output_tokens"], result["requested_output_tokens"])
+                          observed_out = max(result["observed_output_tokens"], result["requested_output_tokens"])
+                          seconds = result["seconds"]
+
+                          row = {
+                              "kind": "end_to_end",
+                              "model_id": model_id,
+                              "prompt_len_target": prompt_len,
+                              "prompt_tokens": result["prompt_tokens"],
+                              "output_len_target": output_len,
+                              "observed_output_tokens": result["observed_output_tokens"],
+                              "effective_output_tokens": observed_out,
+                              "repeat": repeat,
+                              "seconds": seconds,
+                              "end_to_end_tokens_per_second": total_tokens / seconds if seconds > 0 else float("nan"),
+                              "decode_tokens_per_second_approx": observed_out / seconds if seconds > 0 else float("nan"),
+                              "utc_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                          }
+
+                          rows.append(row)
+                          f.write(json.dumps(row) + "\n")
+                          f.flush()
+
+                          print(
+                              "prompt=", prompt_len,
+                              "output=", output_len,
+                              "repeat=", repeat,
+                              "seconds=", round(seconds, 4),
+                              "approx_decode_tok_s=", round(row["decode_tokens_per_second_approx"], 2),
+                          )
+
+          df = pd.DataFrame(rows)
+
+          group_cols = ["prompt_len_target", "output_len_target"]
+          summary = (
+              df.groupby(group_cols)
+              .agg(
+                  runs=("seconds", "count"),
+                  mean_seconds=("seconds", "mean"),
+                  std_seconds=("seconds", "std"),
+                  median_seconds=("seconds", "median"),
+                  min_seconds=("seconds", "min"),
+                  max_seconds=("seconds", "max"),
+                  mean_end_to_end_tokens_per_second=("end_to_end_tokens_per_second", "mean"),
+                  mean_decode_tokens_per_second_approx=("decode_tokens_per_second_approx", "mean"),
+              )
+              .reset_index()
+          )
+
+          summary.to_csv(summary_path, index=False)
+
+          # Simple component-style model:
+          # T(prompt, output) ~= A(prompt) + B(prompt) * output
+          #
+          # For each prompt length, fit a line over output length.
+          # Then measure leave-one-output-length-out prediction error.
+          pred_rows = []
+
+          for prompt_len in prompt_lengths:
+              sub = summary[summary["prompt_len_target"] == prompt_len].copy()
+              if len(sub) < 2:
+                  continue
+
+              x_all = sub["output_len_target"].to_numpy(dtype=float)
+              y_all = sub["mean_seconds"].to_numpy(dtype=float)
+
+              for held_out_output in x_all:
+                  train = sub[sub["output_len_target"] != held_out_output]
+                  test = sub[sub["output_len_target"] == held_out_output]
+
+                  if len(train) < 2:
+                      continue
+
+                  x = train["output_len_target"].to_numpy(dtype=float)
+                  y = train["mean_seconds"].to_numpy(dtype=float)
+
+                  slope, intercept = np.polyfit(x, y, deg=1)
+
+                  actual = float(test["mean_seconds"].iloc[0])
+                  predicted = float(intercept + slope * held_out_output)
+                  abs_error = abs(predicted - actual)
+                  pct_error = (abs_error / actual) * 100.0 if actual > 0 else float("nan")
+
+                  pred_rows.append(
+                      {
+                          "model": "per_prompt_linear_component_model",
+                          "prompt_len_target": prompt_len,
+                          "held_out_output_len": int(held_out_output),
+                          "intercept_prefill_runtime_proxy_seconds": intercept,
+                          "slope_decode_runtime_proxy_seconds_per_token": slope,
+                          "actual_seconds": actual,
+                          "predicted_seconds": predicted,
+                          "absolute_error_seconds": abs_error,
+                          "percent_error": pct_error,
+                      }
+                  )
+
+          pred_df = pd.DataFrame(pred_rows)
+          pred_df.to_csv(prediction_path, index=False)
+
+          # Markdown report
+          with markdown_path.open("w", encoding="utf-8") as md:
+              md.write("# MLX CUDA inference research report\n\n")
+              md.write(f"- Model: `{model_id}`\n")
+              md.write(f"- Prompt lengths: `{prompt_lengths}`\n")
+              md.write(f"- Output lengths: `{output_lengths}`\n")
+              md.write(f"- Repeats: `{repeats}`\n")
+              md.write(f"- Model load seconds: `{load_t1 - load_t0:.4f}`\n")
+              md.write(f"- MLX CUDA available: `{mx.cuda.is_available()}`\n")
+              md.write(f"- MLX GPU device count: `{mx.device_count(mx.gpu)}`\n\n")
+
+              md.write("## Summary\n\n")
+              md.write(summary.to_markdown(index=False))
+              md.write("\n\n")
+
+              md.write("## Component-model prediction errors\n\n")
+              if len(pred_df) > 0:
+                  md.write(pred_df.to_markdown(index=False))
+                  md.write("\n\n")
+                  md.write("## Aggregate prediction error\n\n")
+                  md.write(f"- Mean percent error: `{pred_df['percent_error'].mean():.2f}%`\n")
+                  md.write(f"- Median percent error: `{pred_df['percent_error'].median():.2f}%`\n")
+                  md.write(f"- Max percent error: `{pred_df['percent_error'].max():.2f}%`\n")
+              else:
+                  md.write("Not enough data to fit prediction model.\n")
+
+          print("Wrote:")
+          print(raw_path)
+          print(summary_path)
+          print(prediction_path)
+          print(markdown_path)
+          print(env_path)
+          PY
+
+            echo "--- Run experiment ---"
+            export RUN_DIR="${RUN_DIR}"
+            python "${RUN_DIR}/run_experiment.py"
+
+            echo
+            echo "--- Result files ---"
+            find "${RUN_DIR}" -maxdepth 1 -type f -print -exec ls -lh {} \;
+            echo
+
+            echo "--- Report preview ---"
+            sed -n '1,220p' "${RUN_DIR}/report.md"
           } 2>&1 | tee "${LOG_FILE}"
-          smoke_status=${PIPESTATUS[0]}
+
+          experiment_status=${PIPESTATUS[0]}
 
           {
             echo
-            echo "--- Result ---"
-            echo "Smoke test exit code: ${smoke_status}"
+            echo "--- Final experiment status ---"
+            echo "Experiment exit code: ${experiment_status}"
+            echo "Run directory: ${RUN_DIR}"
+            echo "Log file: ${LOG_FILE}"
           } | tee -a "${LOG_FILE}"
 
-          cp "${LOG_FILE}" "${LATEST_LOG}"
+          echo "--- Update latest directory ---" | tee -a "${LOG_FILE}"
+          rm -rf "${LATEST_DIR}"
+          mkdir -p "${LATEST_DIR}"
+          cp -a "${RUN_DIR}/." "${LATEST_DIR}/"
 
-          echo "--- Commit logs ---" | tee -a "${LOG_FILE}"
+          echo "--- Commit and push results ---" | tee -a "${LOG_FILE}"
           git status --short | tee -a "${LOG_FILE}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${LOG_DIR}"
 
           if git diff --cached --quiet; then
-            echo "No log changes to commit." | tee -a "${LOG_FILE}"
+            echo "No result changes to commit." | tee -a "${LOG_FILE}"
             push_status=0
           else
-            git commit -m "Add MLX CUDA smoke logs for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+            git commit -m "Add MLX CUDA inference results for run ${GITHUB_RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
             git push 2>&1 | tee -a "${LOG_FILE}"
             push_status=${PIPESTATUS[0]}
           fi
 
-          echo "Log file: ${LOG_FILE}"
-          echo "Latest log: ${LATEST_LOG}"
+          echo "Experiment exit code: ${experiment_status}"
           echo "Git push exit code: ${push_status}"
 
-          if [ "${smoke_status}" -ne 0 ]; then
-            exit "${smoke_status}"
+          if [ "${experiment_status}" -ne 0 ]; then
+            exit "${experiment_status}"
           fi
 
           exit "${push_status}"
